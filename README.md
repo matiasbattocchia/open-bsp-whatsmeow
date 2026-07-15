@@ -38,7 +38,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 | `DATABASE_URL`  | yes      | Postgres DSN; `search_path=whatsmeow` appended if absent |
 | `OPENBSP_URL`   | yes      | Edge functions base, e.g. `http://kong:8000/functions/v1` |
 | `BRIDGE_TOKEN`  | yes      | Shared bearer token (must match `WHATSAPP_WEB_TOKEN` in OpenBSP) |
-| `LISTEN_ADDR`   | no       | Default `:8081`                                          |
+| `LISTEN_ADDR`   | no       | Default `:$PORT` (PaaS convention) or `:8081`            |
 | `LOG_LEVEL`     | no       | Default `INFO`                                           |
 
 OpenBSP side (`supabase/functions/.env`): set `WHATSAPP_WEB_URL` to this
@@ -92,8 +92,12 @@ Working end to end:
 
 Not yet implemented:
 
-- [ ] Media, both directions (`DownloadAny` → `POST /media` inbound;
-      `media_url` → `Upload` outbound). Outgoing non-text parts are
+- [ ] Media, both directions — bridge-side plumbing only; the storage side
+      already exists in OpenBSP's generic-webhook. Inbound: `DownloadAny()`
+      (fetch+decrypt from WhatsApp) → POST bytes to the webhook's `/media`
+      route → send a FilePart with the returned `internal://` URI.
+      Outbound: GET the signed `media_url` the dispatcher provides →
+      `Upload()` to WhatsApp. Until then, outgoing non-text parts are
       rejected with 422 → OpenBSP marks the message failed.
 - [ ] Typing indicators out (`SendChatPresence`) — a forwarded typing
       status is currently treated as a read receipt

@@ -41,7 +41,13 @@ func ConfigFromEnv() (*Config, error) {
 		return nil, fmt.Errorf("BRIDGE_TOKEN is required")
 	}
 	if cfg.ListenAddr == "" {
-		cfg.ListenAddr = ":8081"
+		// PaaS convention (Zeabur/Heroku/...): the platform announces the
+		// port it routes traffic to via PORT.
+		if port := os.Getenv("PORT"); port != "" {
+			cfg.ListenAddr = ":" + port
+		} else {
+			cfg.ListenAddr = ":8081"
+		}
 	}
 
 	return cfg, nil
