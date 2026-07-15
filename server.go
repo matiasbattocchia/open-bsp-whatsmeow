@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -98,26 +99,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Type {
 	case "message":
-		var message *waE2E.Message
-
-		switch req.Record.Content.Type {
-		case "text":
-			message = &waE2E.Message{
-				Conversation: proto.String(req.Record.Content.Text),
-			}
-		case "file":
-			var status int
-			var err error
-			message, status, err = buildMediaMessage(r, session, req)
-			if err != nil {
-				http.Error(w, err.Error(), status)
-				return
-			}
-		default:
-			// TODO(v1): DataParts (location, contacts). Permanent until
-			// implemented.
-			http.Error(w, "unsupported content type "+req.Record.Content.Type,
-				http.StatusUnprocessableEntity)
+		message, status, err := buildOutgoingMessage(r, session, chat, req)
+		if err != nil {
+			http.Error(w, err.Error(), status)
 			return
 		}
 
@@ -133,29 +117,195 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case "status":
-		// Read receipt for an incoming message.
-		_, _, id, err := parseExternalID(req.Record.ExternalID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			return
+		// Read receipt and/or typing indicator for an incoming message; the
+		// dispatcher forwards the row when either status key changed
+		// recently, mirroring whatsapp-dispatcher.
+		recent := func(key string) bool {
+			value, _ := req.Record.Status[key].(string)
+			if value == "" {
+				return false
+			}
+			ts, err := time.Parse(time.RFC3339, value)
+			return err == nil && time.Since(ts) <= time.Minute
 		}
 
-		sender := chat
-		if req.Record.GroupAddress != "" && req.Record.ContactAddress != "" {
-			sender = types.NewJID(req.Record.ContactAddress, types.DefaultUserServer)
+		if recent("typing") {
+			if err := session.Client.SendChatPresence(
+				r.Context(), chat, types.ChatPresenceComposing, types.ChatPresenceMediaText,
+			); err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
 		}
 
-		if err := session.Client.MarkRead(
-			r.Context(), []types.MessageID{id}, time.Now(), chat, sender,
-		); err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
-			return
+		if recent("read") {
+			_, _, id, err := parseExternalID(req.Record.ExternalID)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+				return
+			}
+
+			sender := chat
+			if req.Record.GroupAddress != "" && req.Record.ContactAddress != "" {
+				sender = types.NewJID(req.Record.ContactAddress, types.DefaultUserServer)
+			}
+
+			if err := session.Client.MarkRead(
+				r.Context(), []types.MessageID{id}, time.Now(), chat, sender,
+			); err != nil {
+				http.Error(w, err.Error(), http.StatusBadGateway)
+				return
+			}
 		}
 
 		writeJSON(w, map[string]any{})
 
 	default:
 		http.Error(w, "unknown dispatch type "+req.Type, http.StatusUnprocessableEntity)
+	}
+}
+
+// replyContext turns re_message_id into a quote (ContextInfo), matching the
+// Cloud API dispatcher: no context on forwards. Group replies are skipped —
+// the participant (original sender) is not recoverable from the external id.
+func replyContext(chat types.JID, content MessageContent) *waE2E.ContextInfo {
+	if content.ReMessageID == "" || content.Forwarded || chat.Server == types.GroupServer {
+		return nil
+	}
+	_, _, id, err := parseExternalID(content.ReMessageID)
+	if err != nil {
+		return nil
+	}
+	return &waE2E.ContextInfo{
+		StanzaID:      proto.String(id),
+		Participant:   proto.String(chat.ToNonAD().String()),
+		QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
+	}
+}
+
+func optString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return proto.String(value)
+}
+
+// buildOutgoingMessage converts an OpenBSP content Part into a WhatsApp
+// message. Feature parity with the 'whatsapp' (Cloud API) dispatcher: text,
+// reaction, media kinds, location, contacts. Templates are the one
+// protocol-level impossibility on WhatsApp Web and fail permanently.
+// Returns an HTTP status alongside the error: 4xx = permanent, 5xx =
+// transient.
+func buildOutgoingMessage(
+	r *http.Request, session *Session, chat types.JID, req dispatchRequest,
+) (*waE2E.Message, int, error) {
+	content := req.Record.Content
+
+	switch content.Type {
+	case "text":
+		if content.Kind == "reaction" {
+			_, _, id, err := parseExternalID(content.ReMessageID)
+			if err != nil {
+				return nil, http.StatusUnprocessableEntity,
+					fmt.Errorf("reaction without a valid re_message_id: %w", err)
+			}
+			// The external id does not say who sent the original message;
+			// assume the contact did (the common case). Reactions to own
+			// messages may not render on all clients.
+			return session.Client.BuildReaction(chat, chat.ToNonAD(), id, content.Text),
+				0, nil
+		}
+
+		if ctx := replyContext(chat, content); ctx != nil {
+			return &waE2E.Message{
+				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+					Text:        proto.String(content.Text),
+					ContextInfo: ctx,
+				},
+			}, 0, nil
+		}
+		return &waE2E.Message{Conversation: proto.String(content.Text)}, 0, nil
+
+	case "file":
+		return buildMediaMessage(r, session, chat, req)
+
+	case "data":
+		switch content.Kind {
+		case "location":
+			var location LocationData
+			if err := json.Unmarshal(content.Data, &location); err != nil {
+				return nil, http.StatusUnprocessableEntity, fmt.Errorf("invalid location data: %w", err)
+			}
+			return &waE2E.Message{
+				LocationMessage: &waE2E.LocationMessage{
+					DegreesLatitude:  &location.Latitude,
+					DegreesLongitude: &location.Longitude,
+					Name:             optString(location.Name),
+					Address:          optString(location.Address),
+					ContextInfo:      replyContext(chat, content),
+				},
+			}, 0, nil
+
+		case "contacts":
+			var contacts []ContactData
+			if err := json.Unmarshal(content.Data, &contacts); err != nil {
+				return nil, http.StatusUnprocessableEntity, fmt.Errorf("invalid contacts data: %w", err)
+			}
+			if len(contacts) == 0 {
+				return nil, http.StatusUnprocessableEntity, fmt.Errorf("empty contacts data")
+			}
+
+			cards := make([]*waE2E.ContactMessage, 0, len(contacts))
+			for _, contact := range contacts {
+				cards = append(cards, contactToVcard(contact))
+			}
+			if len(cards) == 1 {
+				cards[0].ContextInfo = replyContext(chat, content)
+				return &waE2E.Message{ContactMessage: cards[0]}, 0, nil
+			}
+			return &waE2E.Message{
+				ContactsArrayMessage: &waE2E.ContactsArrayMessage{
+					DisplayName: proto.String(fmt.Sprintf("%d contacts", len(cards))),
+					Contacts:    cards,
+					ContextInfo: replyContext(chat, content),
+				},
+			}, 0, nil
+
+		case "template":
+			return nil, http.StatusUnprocessableEntity,
+				fmt.Errorf("templates are not supported on the whatsapp-web service")
+
+		default:
+			return nil, http.StatusUnprocessableEntity,
+				fmt.Errorf("unsupported data kind %s", content.Kind)
+		}
+
+	default:
+		return nil, http.StatusUnprocessableEntity,
+			fmt.Errorf("unsupported content type %s", content.Type)
+	}
+}
+
+func contactToVcard(contact ContactData) *waE2E.ContactMessage {
+	name := contact.Name.FormattedName
+	if name == "" {
+		name = contact.Name.FirstName
+	}
+
+	var vcard strings.Builder
+	vcard.WriteString("BEGIN:VCARD\nVERSION:3.0\nFN:" + name + "\n")
+	for _, phone := range contact.Phones {
+		if phone.WaID != "" {
+			fmt.Fprintf(&vcard, "TEL;type=CELL;waid=%s:%s\n", phone.WaID, phone.Phone)
+		} else {
+			fmt.Fprintf(&vcard, "TEL;type=CELL:%s\n", phone.Phone)
+		}
+	}
+	vcard.WriteString("END:VCARD")
+
+	return &waE2E.ContactMessage{
+		DisplayName: proto.String(name),
+		Vcard:       proto.String(vcard.String()),
 	}
 }
 
@@ -182,7 +332,7 @@ var kindToMediaType = map[string]whatsmeow.MediaType{
 // embedded, Upload() (encrypts + pushes to WhatsApp's CDN), and copy the
 // resulting keys/hashes into the per-kind protobuf. Returns an HTTP status
 // alongside the error: 4xx = permanent, 5xx = transient.
-func buildMediaMessage(r *http.Request, session *Session, req dispatchRequest) (*waE2E.Message, int, error) {
+func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req dispatchRequest) (*waE2E.Message, int, error) {
 	file := req.Record.Content.File
 	kind := req.Record.Content.Kind
 	caption := req.Record.Content.Text
@@ -229,15 +379,14 @@ func buildMediaMessage(r *http.Request, session *Session, req dispatchRequest) (
 	}
 
 	mimetype := proto.String(file.MimeType)
-	var captionPtr *string
-	if caption != "" {
-		captionPtr = proto.String(caption)
-	}
+	captionPtr := optString(caption)
+	contextInfo := replyContext(chat, req.Record.Content)
 
 	message := &waE2E.Message{}
 	switch kind {
 	case "image":
 		message.ImageMessage = &waE2E.ImageMessage{
+			ContextInfo:   contextInfo,
 			Caption:       captionPtr,
 			Mimetype:      mimetype,
 			URL:           &upload.URL,
@@ -249,6 +398,7 @@ func buildMediaMessage(r *http.Request, session *Session, req dispatchRequest) (
 		}
 	case "sticker":
 		message.StickerMessage = &waE2E.StickerMessage{
+			ContextInfo:   contextInfo,
 			Mimetype:      mimetype,
 			URL:           &upload.URL,
 			DirectPath:    &upload.DirectPath,
@@ -259,6 +409,7 @@ func buildMediaMessage(r *http.Request, session *Session, req dispatchRequest) (
 		}
 	case "audio":
 		message.AudioMessage = &waE2E.AudioMessage{
+			ContextInfo:   contextInfo,
 			Mimetype:      mimetype,
 			URL:           &upload.URL,
 			DirectPath:    &upload.DirectPath,
@@ -269,6 +420,7 @@ func buildMediaMessage(r *http.Request, session *Session, req dispatchRequest) (
 		}
 	case "video":
 		message.VideoMessage = &waE2E.VideoMessage{
+			ContextInfo:   contextInfo,
 			Caption:       captionPtr,
 			Mimetype:      mimetype,
 			URL:           &upload.URL,
@@ -284,6 +436,7 @@ func buildMediaMessage(r *http.Request, session *Session, req dispatchRequest) (
 			namePtr = proto.String(file.Name)
 		}
 		message.DocumentMessage = &waE2E.DocumentMessage{
+			ContextInfo:   contextInfo,
 			Caption:       captionPtr,
 			FileName:      namePtr,
 			Mimetype:      mimetype,

@@ -73,14 +73,41 @@ type WebhookRevoke struct {
 	Timestamp         string `json:"timestamp"`
 }
 
-// MessageContent is a v1 content Part: TextPart (type "text") or FilePart
-// (type "file", where Text carries the caption). DataParts TODO.
+// MessageContent is a v1 content Part: TextPart (type "text", kinds
+// text/reaction), FilePart (type "file", Text carries the caption), or
+// DataPart (type "data", kinds location/contacts, payload in Data using the
+// same shapes as the Cloud API service).
 type MessageContent struct {
-	Version string       `json:"version"`
-	Type    string       `json:"type"`
-	Kind    string       `json:"kind"`
-	Text    string       `json:"text,omitempty"`
-	File    *FilePayload `json:"file,omitempty"`
+	Version     string          `json:"version"`
+	Type        string          `json:"type"`
+	Kind        string          `json:"kind"`
+	Text        string          `json:"text,omitempty"`
+	File        *FilePayload    `json:"file,omitempty"`
+	Data        json.RawMessage `json:"data,omitempty"`
+	ReMessageID string          `json:"re_message_id,omitempty"`
+	Forwarded   bool            `json:"forwarded,omitempty"`
+}
+
+// LocationData mirrors the Cloud API location object used by the
+// 'whatsapp' service, so both services share one DataPart shape.
+type LocationData struct {
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+	Name      string  `json:"name,omitempty"`
+	Address   string  `json:"address,omitempty"`
+}
+
+// ContactData mirrors the Cloud API contacts object (subset).
+type ContactData struct {
+	Name struct {
+		FormattedName string `json:"formatted_name"`
+		FirstName     string `json:"first_name,omitempty"`
+	} `json:"name"`
+	Phones []struct {
+		Phone string `json:"phone"`
+		WaID  string `json:"wa_id,omitempty"`
+		Type  string `json:"type,omitempty"`
+	} `json:"phones,omitempty"`
 }
 
 type FilePayload struct {

@@ -91,21 +91,30 @@ Working end to end:
   error status. Outbound: GET the signed `media_url` from the dispatcher →
   `Upload()` (encrypt+push to WhatsApp CDN) → per-kind protobuf, enforcing
   WhatsApp's per-type size caps (oversize = permanent 422).
-- Delivery/read receipts in; read receipts out (`MarkRead`)
+- Reactions, locations, and contact cards (vCard) in/out — same DataPart
+  shapes as the Cloud API service
+- Replies (`re_message_id` ↔ quoted message) in/out; edits and revokes in
+- Delivery/read receipts in; read receipts + typing indicators out
+  (`MarkRead`, `SendChatPresence`)
 - Contact pushnames
 - QR + phone-code pairing with rotation polling, logout, session-death
   (`logged_out`) notification to management
 
+Parity notes vs the `whatsapp` (Cloud API) service:
+
+- Templates are a Cloud API concept with no WhatsApp Web equivalent —
+  template sends fail permanently (422) with an explicit error.
+- Outgoing reactions/quotes assume the referenced message was sent by the
+  contact (the external id does not encode direction); reacting to your own
+  message may not render on all clients.
+- Group replies are sent without the quote (the original sender is not
+  recoverable from the external id).
+
 Not yet implemented:
 
-- [ ] DataParts (location, contacts, ...) — rejected with 422 → OpenBSP
-      marks the message failed
-- [ ] Typing indicators out (`SendChatPresence`) — a forwarded typing
-      status is currently treated as a read receipt
-- [ ] Groups metadata (`GetGroupInfo` → conversation name) — group text
+- [ ] Groups metadata (`GetGroupInfo` → conversation name) — group
       messages already flow, with per-message sender
 - [ ] History sync import (explicit final statuses; never `pending`)
-- [ ] Edits/revokes translation (webhook contract already supports them)
 - [ ] LID → phone canonicalization for LID-only contacts
 
 ## Development
