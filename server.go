@@ -112,7 +112,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, map[string]any{
-			"external_id": externalID(session.Address, chat.User, resp.ID),
+			"external_id": externalID(session.Address, chat.User, session.Address, resp.ID),
 			"status":      "sent",
 		})
 
@@ -139,15 +139,15 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if recent("read") {
-			_, _, id, err := parseExternalID(req.Record.ExternalID)
+			_, _, senderSegment, id, err := parseExternalID(req.Record.ExternalID)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 				return
 			}
 
 			sender := chat
-			if req.Record.GroupAddress != "" && req.Record.ContactAddress != "" {
-				sender = types.NewJID(req.Record.ContactAddress, types.DefaultUserServer)
+			if senderSegment != "" && senderSegment != session.Address {
+				sender = types.NewJID(senderSegment, types.DefaultUserServer)
 			}
 
 			if err := session.Client.MarkRead(
@@ -165,20 +165,37 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// referencedKey reconstructs the WhatsApp MessageKey pieces of a referenced
+// message from its external id: the sender segment yields both direction
+// (sender == own) and the participant JID.
+func referencedKey(session *Session, content MessageContent) (id string, sender types.JID, ok bool) {
+	_, _, senderSegment, id, err := parseExternalID(content.ReMessageID)
+	if err != nil || senderSegment == "" {
+		return "", types.JID{}, false
+	}
+
+	if senderSegment == session.Address {
+		if session.Client.Store.ID == nil {
+			return "", types.JID{}, false
+		}
+		return id, session.Client.Store.ID.ToNonAD(), true
+	}
+	return id, types.NewJID(senderSegment, types.DefaultUserServer), true
+}
+
 // replyContext turns re_message_id into a quote (ContextInfo), matching the
-// Cloud API dispatcher: no context on forwards. Group replies are skipped —
-// the participant (original sender) is not recoverable from the external id.
-func replyContext(chat types.JID, content MessageContent) *waE2E.ContextInfo {
-	if content.ReMessageID == "" || content.Forwarded || chat.Server == types.GroupServer {
+// Cloud API dispatcher: no context on forwards.
+func replyContext(session *Session, content MessageContent) *waE2E.ContextInfo {
+	if content.ReMessageID == "" || content.Forwarded {
 		return nil
 	}
-	_, _, id, err := parseExternalID(content.ReMessageID)
-	if err != nil {
+	id, sender, ok := referencedKey(session, content)
+	if !ok {
 		return nil
 	}
 	return &waE2E.ContextInfo{
 		StanzaID:      proto.String(id),
-		Participant:   proto.String(chat.ToNonAD().String()),
+		Participant:   proto.String(sender.String()),
 		QuotedMessage: &waE2E.Message{Conversation: proto.String("")},
 	}
 }
@@ -204,19 +221,16 @@ func buildOutgoingMessage(
 	switch content.Type {
 	case "text":
 		if content.Kind == "reaction" {
-			_, _, id, err := parseExternalID(content.ReMessageID)
-			if err != nil {
+			id, sender, ok := referencedKey(session, content)
+			if !ok {
 				return nil, http.StatusUnprocessableEntity,
-					fmt.Errorf("reaction without a valid re_message_id: %w", err)
+					fmt.Errorf("reaction without a valid re_message_id: %s", content.ReMessageID)
 			}
-			// The external id does not say who sent the original message;
-			// assume the contact did (the common case). Reactions to own
-			// messages may not render on all clients.
-			return session.Client.BuildReaction(chat, chat.ToNonAD(), id, content.Text),
+			return session.Client.BuildReaction(chat, sender, id, content.Text),
 				0, nil
 		}
 
-		if ctx := replyContext(chat, content); ctx != nil {
+		if ctx := replyContext(session, content); ctx != nil {
 			return &waE2E.Message{
 				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 					Text:        proto.String(content.Text),
@@ -242,7 +256,7 @@ func buildOutgoingMessage(
 					DegreesLongitude: &location.Longitude,
 					Name:             optString(location.Name),
 					Address:          optString(location.Address),
-					ContextInfo:      replyContext(chat, content),
+					ContextInfo:      replyContext(session, content),
 				},
 			}, 0, nil
 
@@ -260,14 +274,14 @@ func buildOutgoingMessage(
 				cards = append(cards, contactToVcard(contact))
 			}
 			if len(cards) == 1 {
-				cards[0].ContextInfo = replyContext(chat, content)
+				cards[0].ContextInfo = replyContext(session, content)
 				return &waE2E.Message{ContactMessage: cards[0]}, 0, nil
 			}
 			return &waE2E.Message{
 				ContactsArrayMessage: &waE2E.ContactsArrayMessage{
 					DisplayName: proto.String(fmt.Sprintf("%d contacts", len(cards))),
 					Contacts:    cards,
-					ContextInfo: replyContext(chat, content),
+					ContextInfo: replyContext(session, content),
 				},
 			}, 0, nil
 
@@ -380,7 +394,7 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 
 	mimetype := proto.String(file.MimeType)
 	captionPtr := optString(caption)
-	contextInfo := replyContext(chat, req.Record.Content)
+	contextInfo := replyContext(session, req.Record.Content)
 
 	message := &waE2E.Message{}
 	switch kind {

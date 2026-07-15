@@ -24,12 +24,23 @@ type Store struct {
 
 func OpenStore(ctx context.Context, databaseURL string, log waLog.Logger) (*Store, error) {
 	dsn := databaseURL
-	if !strings.Contains(dsn, "search_path") {
+	appendParam := func(param string) {
 		sep := "?"
 		if strings.Contains(dsn, "?") {
 			sep = "&"
 		}
-		dsn += sep + "search_path=" + schemaName
+		dsn += sep + param
+	}
+	if !strings.Contains(dsn, "search_path") {
+		appendParam("search_path=" + schemaName)
+	}
+	// Transaction-mode poolers (Supavisor/pgbouncer port 6543) route each
+	// transaction to a different backend, which breaks pgx's default
+	// prepared-statement cache ("prepared statement stmtcache_... does not
+	// exist/already exists"). Simple protocol works everywhere; override in
+	// the DSN if you are on a direct connection and want extended protocol.
+	if !strings.Contains(dsn, "default_query_exec_mode") {
+		appendParam("default_query_exec_mode=simple_protocol")
 	}
 
 	db, err := sql.Open("pgx", dsn)

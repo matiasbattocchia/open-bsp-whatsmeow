@@ -35,7 +35,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 
 | Env             | Required | Description                                             |
 | --------------- | -------- | ------------------------------------------------------- |
-| `DATABASE_URL`  | yes      | Postgres DSN; `search_path=whatsmeow` appended if absent |
+| `DATABASE_URL`  | yes      | Postgres DSN; `search_path=whatsmeow` and `default_query_exec_mode=simple_protocol` appended if absent (the latter is required behind transaction-mode poolers like Supavisor 6543) |
 | `OPENBSP_URL`   | yes      | Edge functions base, e.g. `http://kong:8000/functions/v1` |
 | `BRIDGE_TOKEN`  | yes      | Shared bearer token (must match `WHATSAPP_WEB_TOKEN` in OpenBSP) |
 | `LISTEN_ADDR`   | no       | Default `:$PORT` (PaaS convention) or `:8081`            |
@@ -104,11 +104,12 @@ Parity notes vs the `whatsapp` (Cloud API) service:
 
 - Templates are a Cloud API concept with no WhatsApp Web equivalent —
   template sends fail permanently (422) with an explicit error.
-- Outgoing reactions/quotes assume the referenced message was sent by the
-  contact (the external id does not encode direction); reacting to your own
-  message may not render on all clients.
-- Group replies are sent without the quote (the original sender is not
-  recoverable from the external id).
+- External ids are `wmw.<own>.<chat>.<sender>.<id>`: the sender segment
+  encodes direction (sender == own) and the group participant, so
+  reactions and quotes reconstruct the full WhatsApp MessageKey with no
+  OpenBSP lookup — including quotes in groups.
+- WhatsApp Status (stories) and newsletters are dropped — they are not
+  conversations.
 - History media is imported as metadata only (old media is frequently gone
   from WhatsApp's CDN): FileParts without a URI render as unavailable
   attachments. History rows always carry explicit final statuses — never

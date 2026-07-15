@@ -127,9 +127,9 @@ func inboundMediaInfo(msg *waE2E.Message) *inboundMedia {
 	return nil
 }
 
-// quotedStanzaID pulls the reply target (quoted message id) out of whichever
-// message type carries the ContextInfo.
-func quotedStanzaID(msg *waE2E.Message) string {
+// quotedRef pulls the reply target (quoted message id + its sender JID) out
+// of whichever message type carries the ContextInfo.
+func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
 	for _, ctx := range []*waE2E.ContextInfo{
 		msg.GetExtendedTextMessage().GetContextInfo(),
 		msg.GetImageMessage().GetContextInfo(),
@@ -142,10 +142,25 @@ func quotedStanzaID(msg *waE2E.Message) string {
 		msg.GetContactsArrayMessage().GetContextInfo(),
 	} {
 		if ctx.GetStanzaID() != "" {
-			return ctx.GetStanzaID()
+			return ctx.GetStanzaID(), ctx.GetParticipant()
 		}
 	}
-	return ""
+	return "", ""
+}
+
+// keySender resolves the sender segment of an external id from
+// MessageKey-style references (fromMe + participant), falling back to the
+// DM peer (== chat) when no participant is given.
+func keySender(session *Session, chat types.JID, fromMe bool, participant string) string {
+	if fromMe {
+		return session.Address
+	}
+	if participant != "" {
+		if jid, err := types.ParseJID(participant); err == nil {
+			return canonicalUser(session, jid, types.JID{})
+		}
+	}
+	return chat.User
 }
 
 // parseVcard extracts the fields OpenBSP's ContactData carries (FN and TEL
@@ -204,13 +219,16 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 	}
 
 	if reaction := evt.Message.GetReactionMessage(); reaction != nil {
+		key := reaction.GetKey()
 		return &MessageContent{
 			Version: "1",
 			Type:    "text",
 			Kind:    "reaction",
 			Text:    reaction.GetText(), // empty text = reaction removed
 			ReMessageID: externalID(
-				session.Address, evt.Info.Chat.User, reaction.GetKey().GetID(),
+				session.Address, evt.Info.Chat.User,
+				keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
+				key.GetID(),
 			),
 		}, nil
 	}
@@ -276,7 +294,12 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 // are internal noise and ignored.
 func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, pm *waE2E.ProtocolMessage) {
 	batch := WebhookBatch{OrganizationAddress: session.Address}
-	original := externalID(session.Address, evt.Info.Chat.User, pm.GetKey().GetID())
+	key := pm.GetKey()
+	original := externalID(
+		session.Address, evt.Info.Chat.User,
+		keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
+		key.GetID(),
+	)
 	timestamp := evt.Info.Timestamp.Format(time.RFC3339)
 
 	switch pm.GetType() {
@@ -323,6 +346,14 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		return // still pairing
 	}
 
+	// WhatsApp Status (stories) and newsletters are not conversations —
+	// drop them. status@broadcast notably is NOT a group: GetGroupInfo on
+	// it times out and would stall the event loop.
+	if evt.Info.Chat == types.StatusBroadcastJID ||
+		evt.Info.Chat.Server == types.NewsletterServer {
+		return
+	}
+
 	if pm := evt.Message.GetProtocolMessage(); pm != nil {
 		m.handleProtocolMessage(session, evt, pm)
 		return
@@ -336,16 +367,24 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 
 	chat := evt.Info.Chat
 
+	senderSegment := session.Address
+	if !evt.Info.IsFromMe {
+		senderSegment = canonicalUser(session, evt.Info.Sender, evt.Info.SenderAlt)
+	}
+
 	// Replies: surface the quoted message as re_message_id (reactions
 	// already carry their target there).
 	if content.ReMessageID == "" {
-		if stanza := quotedStanzaID(evt.Message); stanza != "" {
-			content.ReMessageID = externalID(session.Address, chat.User, stanza)
+		if stanza, participant := quotedRef(evt.Message); stanza != "" {
+			content.ReMessageID = externalID(
+				session.Address, chat.User,
+				keySender(session, chat, false, participant), stanza,
+			)
 		}
 	}
 
 	message := WebhookMessage{
-		ExternalID:     externalID(session.Address, chat.User, evt.Info.ID),
+		ExternalID:     externalID(session.Address, chat.User, senderSegment, evt.Info.ID),
 		ContactAddress: contactAddressFor(session, evt.Info.MessageSource),
 		Content:        *content,
 		Timestamp:      evt.Info.Timestamp.Format(time.RFC3339),
@@ -366,17 +405,25 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	if evt.Info.IsGroup {
 		message.GroupAddress = chat.String()
 
-		// First message from this group this process lifetime: attach the
-		// subject so the webhook can name the conversation.
+		// First message from this group this process lifetime: send the
+		// subject so the webhook can name the conversation. Off the event
+		// loop — GetGroupInfo is a server round-trip.
 		if session.markGroupSent(chat.String()) {
-			if info, err := session.Client.GetGroupInfo(context.Background(), chat); err == nil {
-				batch.Groups = append(batch.Groups, WebhookGroup{
-					Address: chat.String(),
-					Name:    info.Name,
-				})
-			} else {
-				m.log.Warnf("GetGroupInfo %s failed: %v", chat, err)
-			}
+			go func() {
+				info, err := session.Client.GetGroupInfo(context.Background(), chat)
+				if err != nil {
+					m.log.Warnf("GetGroupInfo %s failed: %v", chat, err)
+					return
+				}
+				if err := m.openbsp.PostBatch(WebhookBatch{
+					OrganizationAddress: session.Address,
+					Groups: []WebhookGroup{
+						{Address: chat.String(), Name: info.Name},
+					},
+				}); err != nil {
+					m.log.Errorf("Post group subject for %s failed: %v", chat, err)
+				}
+			}()
 		}
 	}
 
@@ -410,6 +457,11 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 		return
 	}
 
+	if evt.Chat == types.StatusBroadcastJID ||
+		evt.Chat.Server == types.NewsletterServer {
+		return
+	}
+
 	var key string
 	switch evt.Type {
 	case types.ReceiptTypeDelivered:
@@ -423,8 +475,9 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 	batch := WebhookBatch{OrganizationAddress: session.Address}
 
 	for _, id := range evt.MessageIDs {
+		// Delivery/read receipts are always about our own sent messages.
 		status := WebhookStatus{
-			ExternalID:     externalID(session.Address, evt.Chat.User, id),
+			ExternalID:     externalID(session.Address, evt.Chat.User, session.Address, id),
 			ContactAddress: contactAddressFor(session, evt.MessageSource),
 			Status: map[string]any{
 				key: evt.Timestamp.Format(time.RFC3339),

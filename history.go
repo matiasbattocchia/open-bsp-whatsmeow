@@ -63,7 +63,8 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 	imported, skipped := 0, 0
 	for _, conversation := range evt.Data.GetConversations() {
 		chat, err := types.ParseJID(conversation.GetID())
-		if err != nil {
+		if err != nil || chat == types.StatusBroadcastJID ||
+			chat.Server == types.NewsletterServer {
 			continue
 		}
 
@@ -90,14 +91,22 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 				continue
 			}
 
+			senderSegment := session.Address
+			if !parsed.Info.IsFromMe {
+				senderSegment = canonicalUser(session, parsed.Info.Sender, parsed.Info.SenderAlt)
+			}
+
 			if content.ReMessageID == "" {
-				if stanza := quotedStanzaID(parsed.Message); stanza != "" {
-					content.ReMessageID = externalID(session.Address, chat.User, stanza)
+				if stanza, participant := quotedRef(parsed.Message); stanza != "" {
+					content.ReMessageID = externalID(
+						session.Address, chat.User,
+						keySender(session, chat, false, participant), stanza,
+					)
 				}
 			}
 
 			message := WebhookMessage{
-				ExternalID:     externalID(session.Address, chat.User, parsed.Info.ID),
+				ExternalID:     externalID(session.Address, chat.User, senderSegment, parsed.Info.ID),
 				ContactAddress: contactAddressFor(session, parsed.Info.MessageSource),
 				Content:        *content,
 				Status:         historyStatus(webMsg, parsed),
