@@ -85,6 +85,12 @@ Working end to end:
 
 - Text messages in/out (echoes included: phone-sent messages become
   outgoing rows, bridge-sent ones dedupe on `external_id`)
+- Media in/out (image, audio, video, document, sticker). Inbound:
+  `DownloadAny()` (fetch+decrypt) → webhook `/media` → FilePart with the
+  returned `internal://` URI; on failure the message is preserved with an
+  error status. Outbound: GET the signed `media_url` from the dispatcher →
+  `Upload()` (encrypt+push to WhatsApp CDN) → per-kind protobuf, enforcing
+  WhatsApp's per-type size caps (oversize = permanent 422).
 - Delivery/read receipts in; read receipts out (`MarkRead`)
 - Contact pushnames
 - QR + phone-code pairing with rotation polling, logout, session-death
@@ -92,13 +98,8 @@ Working end to end:
 
 Not yet implemented:
 
-- [ ] Media, both directions — bridge-side plumbing only; the storage side
-      already exists in OpenBSP's generic-webhook. Inbound: `DownloadAny()`
-      (fetch+decrypt from WhatsApp) → POST bytes to the webhook's `/media`
-      route → send a FilePart with the returned `internal://` URI.
-      Outbound: GET the signed `media_url` the dispatcher provides →
-      `Upload()` to WhatsApp. Until then, outgoing non-text parts are
-      rejected with 422 → OpenBSP marks the message failed.
+- [ ] DataParts (location, contacts, ...) — rejected with 422 → OpenBSP
+      marks the message failed
 - [ ] Typing indicators out (`SendChatPresence`) — a forwarded typing
       status is currently treated as a read receipt
 - [ ] Groups metadata (`GetGroupInfo` → conversation name) — group text

@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
+	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -96,17 +98,30 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Type {
 	case "message":
-		if req.Record.Content.Type != "text" {
-			// TODO(v1): FilePart via MediaURL download + Client.Upload;
-			// DataParts (location, contacts). Permanent until implemented.
+		var message *waE2E.Message
+
+		switch req.Record.Content.Type {
+		case "text":
+			message = &waE2E.Message{
+				Conversation: proto.String(req.Record.Content.Text),
+			}
+		case "file":
+			var status int
+			var err error
+			message, status, err = buildMediaMessage(r, session, req)
+			if err != nil {
+				http.Error(w, err.Error(), status)
+				return
+			}
+		default:
+			// TODO(v1): DataParts (location, contacts). Permanent until
+			// implemented.
 			http.Error(w, "unsupported content type "+req.Record.Content.Type,
 				http.StatusUnprocessableEntity)
 			return
 		}
 
-		resp, err := session.Client.SendMessage(r.Context(), chat, &waE2E.Message{
-			Conversation: proto.String(req.Record.Content.Text),
-		})
+		resp, err := session.Client.SendMessage(r.Context(), chat, message)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadGateway)
 			return
@@ -142,6 +157,146 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.Error(w, "unknown dispatch type "+req.Type, http.StatusUnprocessableEntity)
 	}
+}
+
+// WhatsApp per-type upload limits, mirroring whatsapp-dispatcher's table.
+// Exceeding them is a permanent (4xx) failure.
+var whatsappMaxFileSize = map[string]int64{
+	"audio":    16 * 1000 * 1000,
+	"document": 100 * 1000 * 1000,
+	"image":    5 * 1000 * 1000,
+	"sticker":  500 * 1000,
+	"video":    16 * 1000 * 1000,
+}
+
+var kindToMediaType = map[string]whatsmeow.MediaType{
+	"image":    whatsmeow.MediaImage,
+	"sticker":  whatsmeow.MediaImage,
+	"audio":    whatsmeow.MediaAudio,
+	"video":    whatsmeow.MediaVideo,
+	"document": whatsmeow.MediaDocument,
+}
+
+// buildMediaMessage turns an outgoing FilePart into a WhatsApp media
+// message: fetch the bytes from the signed media_url the dispatcher
+// embedded, Upload() (encrypts + pushes to WhatsApp's CDN), and copy the
+// resulting keys/hashes into the per-kind protobuf. Returns an HTTP status
+// alongside the error: 4xx = permanent, 5xx = transient.
+func buildMediaMessage(r *http.Request, session *Session, req dispatchRequest) (*waE2E.Message, int, error) {
+	file := req.Record.Content.File
+	kind := req.Record.Content.Kind
+	caption := req.Record.Content.Text
+
+	if file == nil {
+		return nil, http.StatusUnprocessableEntity, fmt.Errorf("file part without file payload")
+	}
+	if req.MediaURL == "" {
+		return nil, http.StatusUnprocessableEntity, fmt.Errorf("file part without media_url")
+	}
+
+	mediaType, ok := kindToMediaType[kind]
+	if !ok {
+		return nil, http.StatusUnprocessableEntity, fmt.Errorf("unsupported file kind %s", kind)
+	}
+
+	maxSize := whatsappMaxFileSize[kind]
+	if file.Size > maxSize {
+		return nil, http.StatusUnprocessableEntity,
+			fmt.Errorf("file too large for WhatsApp: %d bytes (limit %d for %s)", file.Size, maxSize, kind)
+	}
+
+	resp, err := http.Get(req.MediaURL)
+	if err != nil {
+		return nil, http.StatusBadGateway, fmt.Errorf("fetch media: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return nil, http.StatusBadGateway, fmt.Errorf("fetch media: storage responded %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
+	if err != nil {
+		return nil, http.StatusBadGateway, fmt.Errorf("read media: %w", err)
+	}
+	if int64(len(data)) > maxSize {
+		return nil, http.StatusUnprocessableEntity,
+			fmt.Errorf("file too large for WhatsApp: >%d bytes for %s", maxSize, kind)
+	}
+
+	upload, err := session.Client.Upload(r.Context(), data, mediaType)
+	if err != nil {
+		return nil, http.StatusBadGateway, fmt.Errorf("upload to WhatsApp: %w", err)
+	}
+
+	mimetype := proto.String(file.MimeType)
+	var captionPtr *string
+	if caption != "" {
+		captionPtr = proto.String(caption)
+	}
+
+	message := &waE2E.Message{}
+	switch kind {
+	case "image":
+		message.ImageMessage = &waE2E.ImageMessage{
+			Caption:       captionPtr,
+			Mimetype:      mimetype,
+			URL:           &upload.URL,
+			DirectPath:    &upload.DirectPath,
+			MediaKey:      upload.MediaKey,
+			FileEncSHA256: upload.FileEncSHA256,
+			FileSHA256:    upload.FileSHA256,
+			FileLength:    &upload.FileLength,
+		}
+	case "sticker":
+		message.StickerMessage = &waE2E.StickerMessage{
+			Mimetype:      mimetype,
+			URL:           &upload.URL,
+			DirectPath:    &upload.DirectPath,
+			MediaKey:      upload.MediaKey,
+			FileEncSHA256: upload.FileEncSHA256,
+			FileSHA256:    upload.FileSHA256,
+			FileLength:    &upload.FileLength,
+		}
+	case "audio":
+		message.AudioMessage = &waE2E.AudioMessage{
+			Mimetype:      mimetype,
+			URL:           &upload.URL,
+			DirectPath:    &upload.DirectPath,
+			MediaKey:      upload.MediaKey,
+			FileEncSHA256: upload.FileEncSHA256,
+			FileSHA256:    upload.FileSHA256,
+			FileLength:    &upload.FileLength,
+		}
+	case "video":
+		message.VideoMessage = &waE2E.VideoMessage{
+			Caption:       captionPtr,
+			Mimetype:      mimetype,
+			URL:           &upload.URL,
+			DirectPath:    &upload.DirectPath,
+			MediaKey:      upload.MediaKey,
+			FileEncSHA256: upload.FileEncSHA256,
+			FileSHA256:    upload.FileSHA256,
+			FileLength:    &upload.FileLength,
+		}
+	case "document":
+		var namePtr *string
+		if file.Name != "" {
+			namePtr = proto.String(file.Name)
+		}
+		message.DocumentMessage = &waE2E.DocumentMessage{
+			Caption:       captionPtr,
+			FileName:      namePtr,
+			Mimetype:      mimetype,
+			URL:           &upload.URL,
+			DirectPath:    &upload.DirectPath,
+			MediaKey:      upload.MediaKey,
+			FileEncSHA256: upload.FileEncSHA256,
+			FileSHA256:    upload.FileSHA256,
+			FileLength:    &upload.FileLength,
+		}
+	}
+
+	return message, 0, nil
 }
 
 func dispatchChatJID(req dispatchRequest) (types.JID, error) {

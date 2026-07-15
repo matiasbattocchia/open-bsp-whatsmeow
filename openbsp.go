@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"time"
 )
@@ -72,13 +73,21 @@ type WebhookRevoke struct {
 	Timestamp         string `json:"timestamp"`
 }
 
-// MessageContent is a v1 content Part (TextPart for now; FilePart/DataPart
-// TODO along with media support).
+// MessageContent is a v1 content Part: TextPart (type "text") or FilePart
+// (type "file", where Text carries the caption). DataParts TODO.
 type MessageContent struct {
-	Version string `json:"version"`
-	Type    string `json:"type"`
-	Kind    string `json:"kind"`
-	Text    string `json:"text,omitempty"`
+	Version string       `json:"version"`
+	Type    string       `json:"type"`
+	Kind    string       `json:"kind"`
+	Text    string       `json:"text,omitempty"`
+	File    *FilePayload `json:"file,omitempty"`
+}
+
+type FilePayload struct {
+	MimeType string `json:"mime_type"`
+	URI      string `json:"uri"`
+	Name     string `json:"name,omitempty"`
+	Size     int64  `json:"size,omitempty"`
 }
 
 func (o *OpenBSP) post(path string, body any) error {
@@ -108,6 +117,66 @@ func (o *OpenBSP) post(path string, body any) error {
 
 func (o *OpenBSP) PostBatch(batch WebhookBatch) error {
 	return o.post("/whatsapp-web-webhook", batch)
+}
+
+// UploadMedia stores decrypted media bytes in OpenBSP storage via the
+// connector webhook's /media route and returns the internal://media/... URI
+// to reference in a FilePart. The bridge holds no storage credentials; the
+// webhook (which has the service key) does the actual upload and enforces
+// the size cap.
+func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (string, error) {
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+
+	filename := name
+	if filename == "" {
+		filename = "file"
+	}
+	part, err := form.CreateFormFile("file", filename)
+	if err != nil {
+		return "", err
+	}
+	if _, err := part.Write(data); err != nil {
+		return "", err
+	}
+	if name != "" {
+		if err := form.WriteField("name", name); err != nil {
+			return "", err
+		}
+	}
+	if err := form.WriteField("organization_address", organizationAddress); err != nil {
+		return "", err
+	}
+	if err := form.Close(); err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequest(
+		http.MethodPost, o.baseURL+"/whatsapp-web-webhook/media", &body,
+	)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+o.token)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+
+	resp, err := o.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("media upload responded %d", resp.StatusCode)
+	}
+
+	var result struct {
+		URI string `json:"uri"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	return result.URI, nil
 }
 
 // SessionEvent notifies whatsapp-web-management of a lifecycle change; the

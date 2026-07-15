@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"time"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -46,19 +49,86 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 	}
 }
 
+// mediaKinds maps a detected media message to the FilePart metadata OpenBSP
+// expects; the actual bytes are resolved separately via DownloadAny.
+type inboundMedia struct {
+	kind    string
+	mime    string
+	name    string
+	caption string
+}
+
+func inboundMediaInfo(msg *waE2E.Message) *inboundMedia {
+	switch {
+	case msg.GetImageMessage() != nil:
+		img := msg.GetImageMessage()
+		return &inboundMedia{kind: "image", mime: img.GetMimetype(), caption: img.GetCaption()}
+	case msg.GetAudioMessage() != nil:
+		aud := msg.GetAudioMessage()
+		return &inboundMedia{kind: "audio", mime: aud.GetMimetype()}
+	case msg.GetVideoMessage() != nil:
+		vid := msg.GetVideoMessage()
+		return &inboundMedia{kind: "video", mime: vid.GetMimetype(), caption: vid.GetCaption()}
+	case msg.GetDocumentMessage() != nil:
+		doc := msg.GetDocumentMessage()
+		return &inboundMedia{kind: "document", mime: doc.GetMimetype(), name: doc.GetFileName(), caption: doc.GetCaption()}
+	case msg.GetStickerMessage() != nil:
+		stk := msg.GetStickerMessage()
+		return &inboundMedia{kind: "sticker", mime: stk.GetMimetype()}
+	}
+	return nil
+}
+
+// buildContent extracts a v1 content Part from the event. Media is
+// downloaded+decrypted (DownloadAny) and stored via the webhook's /media
+// route; on failure the FilePart is preserved without a URI and mediaErr is
+// returned so the message can carry an error status instead of silently
+// dropping (mirrors whatsapp-webhook's oversized-media path).
+func (m *Manager) buildContent(session *Session, evt *events.Message) (content *MessageContent, mediaErr error) {
+	text := evt.Message.GetConversation()
+	if text == "" {
+		text = evt.Message.GetExtendedTextMessage().GetText()
+	}
+	if text != "" {
+		return &MessageContent{Version: "1", Type: "text", Kind: "text", Text: text}, nil
+	}
+
+	media := inboundMediaInfo(evt.Message)
+	if media == nil {
+		return nil, nil
+	}
+
+	content = &MessageContent{
+		Version: "1",
+		Type:    "file",
+		Kind:    media.kind,
+		Text:    media.caption,
+		File:    &FilePayload{MimeType: media.mime, Name: media.name},
+	}
+
+	data, err := session.Client.DownloadAny(context.Background(), evt.Message)
+	if err != nil {
+		return content, fmt.Errorf("download media: %w", err)
+	}
+
+	uri, err := m.openbsp.UploadMedia(session.Address, media.name, data)
+	if err != nil {
+		return content, fmt.Errorf("store media: %w", err)
+	}
+
+	content.File.URI = uri
+	content.File.Size = int64(len(data))
+	return content, nil
+}
+
 func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	if session.Address == "" {
 		return // still pairing
 	}
 
-	// TODO(v1): media messages — DownloadAny + POST /media, then send a
-	// FilePart with the returned internal:// URI. Text only for now.
-	text := evt.Message.GetConversation()
-	if text == "" {
-		text = evt.Message.GetExtendedTextMessage().GetText()
-	}
-	if text == "" {
-		m.log.Debugf("Skipping non-text message %s (type %s)", evt.Info.ID, evt.Info.Type)
+	content, mediaErr := m.buildContent(session, evt)
+	if content == nil {
+		m.log.Debugf("Skipping unsupported message %s (type %s)", evt.Info.ID, evt.Info.Type)
 		return
 	}
 
@@ -67,13 +137,18 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 
 	message := WebhookMessage{
 		ExternalID: externalID(session.Address, chat.User, evt.Info.ID),
-		Content: MessageContent{
-			Version: "1",
-			Type:    "text",
-			Kind:    "text",
-			Text:    text,
-		},
-		Timestamp: evt.Info.Timestamp.Format(time.RFC3339),
+		Content:    *content,
+		Timestamp:  evt.Info.Timestamp.Format(time.RFC3339),
+	}
+
+	if mediaErr != nil {
+		// Keep the message (metadata + caption) but mark it errored; the
+		// explicit status also keeps automation from processing a FilePart
+		// that has no stored bytes.
+		m.log.Errorf("Media handling failed for %s: %v", message.ExternalID, mediaErr)
+		message.Status = map[string]any{
+			"errors": []string{mediaErr.Error()},
+		}
 	}
 
 	if evt.Info.IsGroup {
@@ -88,9 +163,10 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	if evt.Info.IsFromMe {
 		// Echo (bridge- or phone-sent): explicit status keeps it inert.
 		message.Direction = "outgoing"
-		message.Status = map[string]any{
-			"sent": evt.Info.Timestamp.Format(time.RFC3339),
+		if message.Status == nil {
+			message.Status = map[string]any{}
 		}
+		message.Status["sent"] = evt.Info.Timestamp.Format(time.RFC3339)
 	} else {
 		// Live incoming: no status, so the pending default arms automation.
 		message.Direction = "incoming"
