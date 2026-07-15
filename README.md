@@ -109,13 +109,16 @@ Parity notes vs the `whatsapp` (Cloud API) service:
   message may not render on all clients.
 - Group replies are sent without the quote (the original sender is not
   recoverable from the external id).
+- History media is imported as metadata only (old media is frequently gone
+  from WhatsApp's CDN): FileParts without a URI render as unavailable
+  attachments. History rows always carry explicit final statuses — never
+  `pending`, which is OpenBSP's automation gate.
+- LID-only peers the store has no phone mapping for fall back to the LID
+  digits as contact_address (rare; the mapping fills in as messages flow).
 
-Not yet implemented:
-
-- [ ] Groups metadata (`GetGroupInfo` → conversation name) — group
-      messages already flow, with per-message sender
-- [ ] History sync import (explicit final statuses; never `pending`)
-- [ ] LID → phone canonicalization for LID-only contacts
+Also working: group subjects → conversation names (on first sight and on
+renames), history sync import (messages + pushnames, chunked), LID → phone
+canonicalization for contact addresses.
 
 ## Development
 

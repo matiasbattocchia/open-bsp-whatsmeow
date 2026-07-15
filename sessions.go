@@ -24,6 +24,26 @@ type Session struct {
 	// Set while the session is pairing; used to surface QR rotation and
 	// completion to the polling endpoint.
 	Pending *PendingSession
+
+	// Groups whose metadata (subject → conversation name) was already sent
+	// this process lifetime; re-sending after a restart is harmless.
+	groupsMu   sync.Mutex
+	groupsSent map[string]struct{}
+}
+
+// markGroupSent reports whether the group still needed its metadata sent and
+// atomically marks it as sent.
+func (s *Session) markGroupSent(address string) bool {
+	s.groupsMu.Lock()
+	defer s.groupsMu.Unlock()
+	if s.groupsSent == nil {
+		s.groupsSent = make(map[string]struct{})
+	}
+	if _, seen := s.groupsSent[address]; seen {
+		return false
+	}
+	s.groupsSent[address] = struct{}{}
+	return true
 }
 
 // Manager owns all sessions of this bridge instance. One replica by design:

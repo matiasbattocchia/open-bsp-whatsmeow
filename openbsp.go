@@ -34,8 +34,16 @@ type WebhookBatch struct {
 	Messages            []WebhookMessage `json:"messages,omitempty"`
 	Statuses            []WebhookStatus  `json:"statuses,omitempty"`
 	Contacts            []WebhookContact `json:"contacts,omitempty"`
+	Groups              []WebhookGroup   `json:"groups,omitempty"`
 	Edits               []WebhookEdit    `json:"edits,omitempty"`
 	Revokes             []WebhookRevoke  `json:"revokes,omitempty"`
+}
+
+// WebhookGroup carries group metadata; the webhook applies Name to the
+// matching conversation.
+type WebhookGroup struct {
+	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
 }
 
 type WebhookMessage struct {

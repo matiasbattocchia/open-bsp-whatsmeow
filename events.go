@@ -46,9 +46,55 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 	case *events.Receipt:
 		m.handleReceipt(session, v)
 
-		// TODO(v1): *events.HistorySync — import with explicit final statuses
-		// (see the connector webhook contract; never status.pending).
+	case *events.GroupInfo:
+		if v.Name != nil {
+			batch := WebhookBatch{
+				OrganizationAddress: session.Address,
+				Groups: []WebhookGroup{
+					{Address: v.JID.String(), Name: v.Name.Name},
+				},
+			}
+			if err := m.openbsp.PostBatch(batch); err != nil {
+				m.log.Errorf("Post group rename for %s failed: %v", v.JID, err)
+			}
+		}
+
+	case *events.HistorySync:
+		// Runs in its own goroutine: a sync can carry thousands of messages
+		// and must not block the event loop.
+		go m.handleHistorySync(session, v)
 	}
+}
+
+// canonicalUser resolves a JID to the canonical bare phone digits used as
+// contact_address. LID (hidden user) JIDs are mapped back to the phone
+// number via the alt JID the event carries, falling back to the store's LID
+// map, then to the LID digits themselves (rare: a LID-only peer the store
+// has never seen a mapping for).
+func canonicalUser(session *Session, jid, alt types.JID) string {
+	if jid.Server != types.HiddenUserServer {
+		return jid.User
+	}
+	if alt.Server == types.DefaultUserServer && alt.User != "" {
+		return alt.User
+	}
+	pn, err := session.Client.Store.LIDs.GetPNForLID(context.Background(), jid.ToNonAD())
+	if err == nil && !pn.IsEmpty() {
+		return pn.User
+	}
+	return jid.User
+}
+
+// contactAddressFor picks the row-level contact_address for a message
+// source: the group participant for groups, otherwise the DM peer.
+func contactAddressFor(session *Session, source types.MessageSource) string {
+	if source.IsGroup {
+		return canonicalUser(session, source.Sender, source.SenderAlt)
+	}
+	if source.IsFromMe {
+		return canonicalUser(session, source.Chat, source.RecipientAlt)
+	}
+	return canonicalUser(session, source.Chat, source.SenderAlt)
 }
 
 // mediaKinds maps a detected media message to the FilePart metadata OpenBSP
@@ -141,12 +187,14 @@ func dataPart(kind string, data any) (*MessageContent, error) {
 	return &MessageContent{Version: "1", Type: "data", Kind: kind, Data: payload}, nil
 }
 
-// buildContent extracts a v1 content Part from the event. Media is
-// downloaded+decrypted (DownloadAny) and stored via the webhook's /media
-// route; on failure the FilePart is preserved without a URI and mediaErr is
-// returned so the message can carry an error status instead of silently
-// dropping (mirrors whatsapp-webhook's oversized-media path).
-func (m *Manager) buildContent(session *Session, evt *events.Message) (content *MessageContent, mediaErr error) {
+// buildContent extracts a v1 content Part from the event. When
+// downloadMedia is set, media is downloaded+decrypted (DownloadAny) and
+// stored via the webhook's /media route; on failure the FilePart is
+// preserved without a URI and mediaErr is returned so the message can carry
+// an error status instead of silently dropping (mirrors whatsapp-webhook's
+// oversized-media path). History import passes downloadMedia=false: old
+// media is frequently gone from the CDN, so only the metadata is kept.
+func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMedia bool) (content *MessageContent, mediaErr error) {
 	text := evt.Message.GetConversation()
 	if text == "" {
 		text = evt.Message.GetExtendedTextMessage().GetText()
@@ -201,6 +249,10 @@ func (m *Manager) buildContent(session *Session, evt *events.Message) (content *
 		Kind:    media.kind,
 		Text:    media.caption,
 		File:    &FilePayload{MimeType: media.mime, Name: media.name},
+	}
+
+	if !downloadMedia {
+		return content, nil
 	}
 
 	data, err := session.Client.DownloadAny(context.Background(), evt.Message)
@@ -276,14 +328,13 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		return
 	}
 
-	content, mediaErr := m.buildContent(session, evt)
+	content, mediaErr := m.buildContent(session, evt, true)
 	if content == nil {
 		m.log.Debugf("Skipping unsupported message %s (type %s)", evt.Info.ID, evt.Info.Type)
 		return
 	}
 
 	chat := evt.Info.Chat
-	sender := evt.Info.Sender
 
 	// Replies: surface the quoted message as re_message_id (reactions
 	// already carry their target there).
@@ -294,9 +345,10 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	}
 
 	message := WebhookMessage{
-		ExternalID: externalID(session.Address, chat.User, evt.Info.ID),
-		Content:    *content,
-		Timestamp:  evt.Info.Timestamp.Format(time.RFC3339),
+		ExternalID:     externalID(session.Address, chat.User, evt.Info.ID),
+		ContactAddress: contactAddressFor(session, evt.Info.MessageSource),
+		Content:        *content,
+		Timestamp:      evt.Info.Timestamp.Format(time.RFC3339),
 	}
 
 	if mediaErr != nil {
@@ -309,14 +361,24 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		}
 	}
 
+	batch := WebhookBatch{OrganizationAddress: session.Address}
+
 	if evt.Info.IsGroup {
 		message.GroupAddress = chat.String()
-		message.ContactAddress = sender.User
-	} else {
-		message.ContactAddress = chat.User
-	}
 
-	batch := WebhookBatch{OrganizationAddress: session.Address}
+		// First message from this group this process lifetime: attach the
+		// subject so the webhook can name the conversation.
+		if session.markGroupSent(chat.String()) {
+			if info, err := session.Client.GetGroupInfo(context.Background(), chat); err == nil {
+				batch.Groups = append(batch.Groups, WebhookGroup{
+					Address: chat.String(),
+					Name:    info.Name,
+				})
+			} else {
+				m.log.Warnf("GetGroupInfo %s failed: %v", chat, err)
+			}
+		}
+	}
 
 	if evt.Info.IsFromMe {
 		// Echo (bridge- or phone-sent): explicit status keeps it inert.
@@ -330,7 +392,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		message.Direction = "incoming"
 		if evt.Info.PushName != "" {
 			batch.Contacts = append(batch.Contacts, WebhookContact{
-				Address: sender.User,
+				Address: contactAddressFor(session, evt.Info.MessageSource),
 				Extra:   map[string]any{"name": evt.Info.PushName},
 			})
 		}
@@ -362,16 +424,14 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 
 	for _, id := range evt.MessageIDs {
 		status := WebhookStatus{
-			ExternalID: externalID(session.Address, evt.Chat.User, id),
+			ExternalID:     externalID(session.Address, evt.Chat.User, id),
+			ContactAddress: contactAddressFor(session, evt.MessageSource),
 			Status: map[string]any{
 				key: evt.Timestamp.Format(time.RFC3339),
 			},
 		}
 		if evt.IsGroup {
 			status.GroupAddress = evt.Chat.String()
-			status.ContactAddress = evt.Sender.User
-		} else {
-			status.ContactAddress = evt.Chat.User
 		}
 		batch.Statuses = append(batch.Statuses, status)
 	}
