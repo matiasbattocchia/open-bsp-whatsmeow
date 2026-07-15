@@ -29,6 +29,7 @@ func (s *Server) ListenAndServe() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /dispatch", s.auth(s.handleDispatch))
 	mux.HandleFunc("POST /sessions", s.auth(s.handleCreateSession))
+	mux.HandleFunc("GET /sessions/pending/{id}", s.auth(s.handlePendingState))
 	mux.HandleFunc("GET /sessions/{address}", s.auth(s.handleSessionStatus))
 	mux.HandleFunc("DELETE /sessions/{address}", s.auth(s.handleLogout))
 
@@ -174,6 +175,18 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, result)
+}
+
+// Polled by the UI (through whatsapp-web-management) during pairing: QR
+// codes rotate every ~20s, so the latest one is always available here, and
+// status flips to paired/error on completion.
+func (s *Server) handlePendingState(w http.ResponseWriter, r *http.Request) {
+	state := s.manager.PendingState(r.PathValue("id"))
+	if state == nil {
+		http.Error(w, "unknown pairing session", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, state)
 }
 
 func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {

@@ -37,7 +37,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 | --------------- | -------- | ------------------------------------------------------- |
 | `DATABASE_URL`  | yes      | Postgres DSN; `search_path=whatsmeow` appended if absent |
 | `OPENBSP_URL`   | yes      | Edge functions base, e.g. `http://kong:8000/functions/v1` |
-| `BRIDGE_TOKEN`  | yes      | Shared bearer token (must match `WHATSAPP_WEB_BRIDGE_TOKEN` in OpenBSP) |
+| `BRIDGE_TOKEN`  | yes      | Shared bearer token (must match `WHATSAPP_WEB_TOKEN` in OpenBSP) |
 | `LISTEN_ADDR`   | no       | Default `:8081`                                          |
 | `LOG_LEVEL`     | no       | Default `INFO`                                           |
 
@@ -63,21 +63,23 @@ services:
   `{type: "message"|"status", record, media_url?}` → `{external_id, status}`.
   4xx = permanent failure, 5xx = transient (retried by OpenBSP's cron).
 - `POST /sessions` — `{organization_id, phone_number?}` →
-  `{qr_code}` or `{pairing_code}`.
+  `{session_id, status: "pending", qr_code?}` or `{..., pairing_code?}`.
+- `GET /sessions/pending/{session_id}` — poll during pairing (QR codes
+  rotate ~20s): `{session_id, status: pending|paired|error, qr_code?,
+  pairing_code?, address?, error?}`.
 - `GET /sessions/{address}` — `{address, connected, logged_in}`.
 - `DELETE /sessions/{address}` — logout + delete device.
 
 ## Status / TODO (v0 scaffold)
 
 - [x] Text messages in/out, receipts, contact pushnames, QR + phone-code
-      pairing, logout, logged-out notification
+      pairing with rotation polling, logout, logged-out notification
 - [ ] Media (`DownloadAny` → `POST /media`; `media_url` → `Upload`)
 - [ ] Groups metadata (`GetGroupInfo` → conversation name) — group text
       messages already flow
 - [ ] History sync import (explicit final statuses; never `pending`)
 - [ ] Edits/revokes translation (webhook contract already supports them)
 - [ ] LID → phone canonicalization for LID-only contacts
-- [ ] QR rotation surface (poll/SSE) for the pairing UI
 
 ## Development
 

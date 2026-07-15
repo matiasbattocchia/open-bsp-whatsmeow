@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"time"
@@ -19,6 +21,9 @@ type Session struct {
 	Client         *whatsmeow.Client
 	OrganizationID string
 	Address        string
+	// Set while the session is pairing; used to surface QR rotation and
+	// completion to the polling endpoint.
+	Pending *PendingSession
 }
 
 // Manager owns all sessions of this bridge instance. One replica by design:
@@ -29,7 +34,8 @@ type Manager struct {
 	log     waLog.Logger
 
 	mu       sync.RWMutex
-	sessions map[string]*Session // by Address
+	sessions map[string]*Session        // by Address
+	pending  map[string]*PendingSession // by pairing session id
 }
 
 func NewManager(st *Store, openbsp *OpenBSP, log waLog.Logger) *Manager {
@@ -38,7 +44,14 @@ func NewManager(st *Store, openbsp *OpenBSP, log waLog.Logger) *Manager {
 		openbsp:  openbsp,
 		log:      log,
 		sessions: make(map[string]*Session),
+		pending:  make(map[string]*PendingSession),
 	}
+}
+
+func randomID() string {
+	buf := make([]byte, 8)
+	_, _ = rand.Read(buf)
+	return hex.EncodeToString(buf)
 }
 
 // Start connects every device already present in the session store.
@@ -93,26 +106,89 @@ func (m *Manager) Get(address string) *Session {
 	return m.sessions[address]
 }
 
-// PairingResult is returned to whatsapp-web-management for the UI to render.
-type PairingResult struct {
-	QRCode      string `json:"qr_code,omitempty"`
-	PairingCode string `json:"pairing_code,omitempty"`
+// PendingSession tracks an in-progress pairing so the UI can poll for QR
+// rotation (codes expire every ~20s) and completion.
+type PendingSession struct {
+	ID      string
+	Session *Session
+
+	mu          sync.Mutex
+	qrCode      string
+	pairingCode string
+	status      string // pending | paired | error
+	errMessage  string
+	createdAt   time.Time
 }
 
-// CreateSession starts pairing a new device. It returns a QR code string
-// (or, when phoneNumber is given, a pairing code) and completes
-// asynchronously: on PairSuccess the event handler saves the mapping and
-// notifies whatsapp-web-management. The pending session keeps its
-// organization but has no address until pairing succeeds.
-func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber string) (*PairingResult, error) {
+const pendingTTL = 10 * time.Minute
+
+// PairingState is the poll response relayed by whatsapp-web-management.
+type PairingState struct {
+	SessionID   string `json:"session_id"`
+	Status      string `json:"status"` // pending | paired | error
+	QRCode      string `json:"qr_code,omitempty"`
+	PairingCode string `json:"pairing_code,omitempty"`
+	// Set once paired: the organizations_addresses.address of the new session.
+	Address string `json:"address,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+func (p *PendingSession) state() *PairingState {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	status := p.status
+	if status == "pending" && time.Since(p.createdAt) > pendingTTL {
+		status = "error"
+		if p.errMessage == "" {
+			p.errMessage = "pairing timed out"
+		}
+	}
+
+	return &PairingState{
+		SessionID:   p.ID,
+		Status:      status,
+		QRCode:      p.qrCode,
+		PairingCode: p.pairingCode,
+		Address:     p.Session.Address,
+		Error:       p.errMessage,
+	}
+}
+
+// CreateSession starts pairing a new device and returns the initial pairing
+// state: a QR code string (rotated codes are picked up via PendingState
+// polling) or, when phoneNumber is given, a phone pairing code. Pairing
+// completes asynchronously: on PairSuccess the event handler saves the
+// mapping, notifies whatsapp-web-management, and flips the pending status.
+func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber string) (*PairingState, error) {
 	device := m.store.Container.NewDevice()
 	session := &Session{
 		Client:         whatsmeow.NewClient(device, m.log.Sub("client/pairing")),
 		OrganizationID: organizationID,
 	}
+
+	pending := &PendingSession{
+		ID:        randomID(),
+		Session:   session,
+		status:    "pending",
+		createdAt: time.Now(),
+	}
+	session.Pending = pending
 	session.Client.AddEventHandler(func(evt any) { m.handleEvent(session, evt) })
 
-	qrChan, err := session.Client.GetQRChannel(ctx)
+	m.mu.Lock()
+	// Opportunistically drop long-expired pairings so the map doesn't grow.
+	for id, p := range m.pending {
+		if time.Since(p.createdAt) > 3*pendingTTL {
+			delete(m.pending, id)
+		}
+	}
+	m.pending[pending.ID] = pending
+	m.mu.Unlock()
+
+	// Use a background context for the QR channel: it must outlive the HTTP
+	// request that started the pairing.
+	qrChan, err := session.Client.GetQRChannel(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("qr channel: %w", err)
 	}
@@ -120,6 +196,32 @@ func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber
 	if err := session.Client.Connect(); err != nil {
 		return nil, fmt.Errorf("connect for pairing: %w", err)
 	}
+
+	// Consume the QR channel for the whole pairing window, keeping the
+	// latest code available to the polling endpoint.
+	go func() {
+		for item := range qrChan {
+			switch item.Event {
+			case "code":
+				pending.mu.Lock()
+				pending.qrCode = item.Code
+				pending.mu.Unlock()
+			case whatsmeow.QRChannelSuccess.Event:
+				// completePairing (via the PairSuccess event) flips the
+				// status; nothing to do here.
+			default: // timeout, error, multidevice-not-enabled, ...
+				pending.mu.Lock()
+				if pending.status == "pending" {
+					pending.status = "error"
+					pending.errMessage = item.Event
+					if item.Error != nil {
+						pending.errMessage = item.Error.Error()
+					}
+				}
+				pending.mu.Unlock()
+			}
+		}
+	}()
 
 	if phoneNumber != "" {
 		code, err := session.Client.PairPhone(
@@ -129,32 +231,44 @@ func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber
 			session.Client.Disconnect()
 			return nil, fmt.Errorf("pair phone: %w", err)
 		}
-		// Drain the QR channel in the background so pairing can complete.
-		go func() {
-			for range qrChan {
-				// PairSuccess is handled by the event handler.
-			}
-		}()
-		return &PairingResult{PairingCode: code}, nil
+		pending.mu.Lock()
+		pending.pairingCode = code
+		pending.mu.Unlock()
+		return pending.state(), nil
 	}
 
-	select {
-	case item := <-qrChan:
-		if item.Event != "code" {
+	// Wait for the first QR code so the UI has something to render right
+	// away; rotations arrive via polling.
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case <-deadline:
 			session.Client.Disconnect()
-			return nil, fmt.Errorf("pairing failed: %s %v", item.Event, item.Error)
-		}
-		go func() {
-			for range qrChan {
-				// Subsequent codes/success are handled by the event handler;
-				// TODO: expose code rotation to the UI (poll or SSE).
+			return nil, fmt.Errorf("timed out waiting for QR code")
+		case <-time.After(200 * time.Millisecond):
+			state := pending.state()
+			if state.QRCode != "" || state.Status == "error" {
+				if state.Status == "error" {
+					session.Client.Disconnect()
+					return nil, fmt.Errorf("pairing failed: %s", state.Error)
+				}
+				return state, nil
 			}
-		}()
-		return &PairingResult{QRCode: item.Code}, nil
-	case <-time.After(15 * time.Second):
-		session.Client.Disconnect()
-		return nil, fmt.Errorf("timed out waiting for QR code")
+		}
 	}
+}
+
+// PendingState returns the current pairing state for polling, or nil for an
+// unknown id.
+func (m *Manager) PendingState(id string) *PairingState {
+	m.mu.RLock()
+	pending := m.pending[id]
+	m.mu.RUnlock()
+
+	if pending == nil {
+		return nil
+	}
+	return pending.state()
 }
 
 // completePairing is called from the event handler on PairSuccess/Connected
@@ -165,6 +279,12 @@ func (m *Manager) completePairing(session *Session, ownJID types.JID) {
 	m.mu.Lock()
 	m.sessions[session.Address] = session
 	m.mu.Unlock()
+
+	if session.Pending != nil {
+		session.Pending.mu.Lock()
+		session.Pending.status = "paired"
+		session.Pending.mu.Unlock()
+	}
 
 	ctx := context.Background()
 
