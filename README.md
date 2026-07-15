@@ -44,12 +44,21 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 OpenBSP side (`supabase/functions/.env`): set `WHATSAPP_WEB_URL` to this
 service's base URL and `WHATSAPP_WEB_TOKEN` to the same token.
 
-## docker-compose
+## Deployment
+
+The reference deployment runs on Zeabur (project *OpenBSP*) at
+`https://whatsmeow.openbsp.dev`, built from this repo's Dockerfile; the
+OpenBSP edge functions reach it via the `WHATSAPP_WEB_URL` /
+`WHATSAPP_WEB_TOKEN` secrets. On hosted Supabase, point `DATABASE_URL` at
+Supavisor (transaction mode, port 6543).
+
+Self-hosters can use docker-compose (no published image yet — build from
+source):
 
 ```yaml
 services:
   whatsmeow-bridge:
-    image: ghcr.io/matiasbattocchia/open-bsp-whatsmeow
+    build: https://github.com/matiasbattocchia/open-bsp-whatsmeow.git
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
       OPENBSP_URL: http://kong:8000/functions/v1
@@ -70,13 +79,26 @@ services:
 - `GET /sessions/{address}` — `{address, connected, logged_in}`.
 - `DELETE /sessions/{address}` — logout + delete device.
 
-## Status / TODO (v0 scaffold)
+## Status / TODO (v0)
 
-- [x] Text messages in/out, receipts, contact pushnames, QR + phone-code
-      pairing with rotation polling, logout, logged-out notification
-- [ ] Media (`DownloadAny` → `POST /media`; `media_url` → `Upload`)
+Working end to end:
+
+- Text messages in/out (echoes included: phone-sent messages become
+  outgoing rows, bridge-sent ones dedupe on `external_id`)
+- Delivery/read receipts in; read receipts out (`MarkRead`)
+- Contact pushnames
+- QR + phone-code pairing with rotation polling, logout, session-death
+  (`logged_out`) notification to management
+
+Not yet implemented:
+
+- [ ] Media, both directions (`DownloadAny` → `POST /media` inbound;
+      `media_url` → `Upload` outbound). Outgoing non-text parts are
+      rejected with 422 → OpenBSP marks the message failed.
+- [ ] Typing indicators out (`SendChatPresence`) — a forwarded typing
+      status is currently treated as a read receipt
 - [ ] Groups metadata (`GetGroupInfo` → conversation name) — group text
-      messages already flow
+      messages already flow, with per-message sender
 - [ ] History sync import (explicit final statuses; never `pending`)
 - [ ] Edits/revokes translation (webhook contract already supports them)
 - [ ] LID → phone canonicalization for LID-only contacts
