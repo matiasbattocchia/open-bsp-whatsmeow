@@ -215,7 +215,12 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 		text = evt.Message.GetExtendedTextMessage().GetText()
 	}
 	if text != "" {
-		return &MessageContent{Version: "1", Type: "text", Kind: "text", Text: text}, nil
+		return &MessageContent{
+			Version: "1",
+			Type:    "text",
+			Kind:    "text",
+			Text:    whatsappToMarkdown(text),
+		}, nil
 	}
 
 	if reaction := evt.Message.GetReactionMessage(); reaction != nil {
@@ -265,7 +270,7 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 		Version: "1",
 		Type:    "file",
 		Kind:    media.kind,
-		Text:    media.caption,
+		Text:    whatsappToMarkdown(media.caption),
 		File:    &FilePayload{MimeType: media.mime, Name: media.name},
 	}
 
@@ -329,7 +334,7 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 		}
 		batch.Edits = append(batch.Edits, WebhookEdit{
 			OriginalMessageID: original,
-			Text:              text,
+			Text:              whatsappToMarkdown(text),
 			Timestamp:         timestamp,
 		})
 	default:

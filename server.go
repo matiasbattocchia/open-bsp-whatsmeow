@@ -230,15 +230,16 @@ func buildOutgoingMessage(
 				0, nil
 		}
 
+		text := markdownToWhatsApp(content.Text)
 		if ctx := replyContext(session, content); ctx != nil {
 			return &waE2E.Message{
 				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-					Text:        proto.String(content.Text),
+					Text:        proto.String(text),
 					ContextInfo: ctx,
 				},
 			}, 0, nil
 		}
-		return &waE2E.Message{Conversation: proto.String(content.Text)}, 0, nil
+		return &waE2E.Message{Conversation: proto.String(text)}, 0, nil
 
 	case "file":
 		return buildMediaMessage(r, session, chat, req)
@@ -393,7 +394,7 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 	}
 
 	mimetype := proto.String(file.MimeType)
-	captionPtr := optString(caption)
+	captionPtr := optString(markdownToWhatsApp(caption))
 	contextInfo := replyContext(session, req.Record.Content)
 
 	message := &waE2E.Message{}
