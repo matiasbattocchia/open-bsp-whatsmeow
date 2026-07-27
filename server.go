@@ -220,14 +220,9 @@ func buildOutgoingMessage(
 
 	switch content.Type {
 	case "text":
+		// Legacy reaction shape (pre cross-service ReactionPart rows).
 		if content.Kind == "reaction" {
-			id, sender, ok := referencedKey(session, content)
-			if !ok {
-				return nil, http.StatusUnprocessableEntity,
-					fmt.Errorf("reaction without a valid re_message_id: %s", content.ReMessageID)
-			}
-			return session.Client.BuildReaction(chat, sender, id, content.Text),
-				0, nil
+			return buildReaction(session, chat, content)
 		}
 
 		text := markdownToWhatsApp(content.Text)
@@ -246,6 +241,8 @@ func buildOutgoingMessage(
 
 	case "data":
 		switch content.Kind {
+		case "reaction":
+			return buildReaction(session, chat, content)
 		case "location":
 			var location LocationData
 			if err := json.Unmarshal(content.Data, &location); err != nil {
@@ -465,6 +462,37 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 	}
 
 	return message, 0, nil
+}
+
+// buildReaction handles both reaction shapes: the cross-service ReactionPart
+// (type data, data {action, name, unicode}) and the legacy TextPart. The
+// emoji sent to WhatsApp is the Unicode display form; empty removes (the
+// wire convention on this service).
+func buildReaction(
+	session *Session, chat types.JID, content MessageContent,
+) (*waE2E.Message, int, error) {
+	id, sender, ok := referencedKey(session, content)
+	if !ok {
+		return nil, http.StatusUnprocessableEntity,
+			fmt.Errorf("reaction without a valid re_message_id: %s", content.ReMessageID)
+	}
+
+	emoji := content.Text
+	if len(content.Data) > 0 {
+		var data struct {
+			Action  string `json:"action"`
+			Unicode string `json:"unicode"`
+		}
+		if err := json.Unmarshal(content.Data, &data); err == nil {
+			if data.Action == "removed" {
+				emoji = ""
+			} else if emoji == "" {
+				emoji = data.Unicode
+			}
+		}
+	}
+
+	return session.Client.BuildReaction(chat, sender, id, emoji), 0, nil
 }
 
 func dispatchChatJID(req dispatchRequest) (types.JID, error) {

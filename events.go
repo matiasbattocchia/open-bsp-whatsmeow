@@ -238,11 +238,28 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 
 	if reaction := evt.Message.GetReactionMessage(); reaction != nil {
 		key := reaction.GetKey()
+		emoji := reaction.GetText()
+		// Cross-service ReactionPart: text = the Unicode emoji, empty on
+		// removal; data carries {action, name, unicode} (name = the emoji
+		// itself for WhatsApp; removals carry no emoji on this service).
+		reactionData := map[string]any{"action": "removed"}
+		if emoji != "" {
+			reactionData = map[string]any{
+				"action":  "added",
+				"name":    emoji,
+				"unicode": emoji,
+			}
+		}
+		payload, err := json.Marshal(reactionData)
+		if err != nil {
+			return nil, err
+		}
 		return &MessageContent{
 			Version: "1",
-			Type:    "text",
+			Type:    "data",
 			Kind:    "reaction",
-			Text:    reaction.GetText(), // empty text = reaction removed
+			Text:    emoji,
+			Data:    payload,
 			ReMessageID: externalID(
 				session.Address, evt.Info.Chat.User,
 				keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
