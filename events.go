@@ -239,9 +239,9 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 	if reaction := evt.Message.GetReactionMessage(); reaction != nil {
 		key := reaction.GetKey()
 		emoji := reaction.GetText()
-		// Cross-service ReactionPart: text = the Unicode emoji, empty on
-		// removal; data carries {action, name, unicode} (name = the emoji
-		// itself for WhatsApp; removals carry no emoji on this service).
+		// Cross-service ReactionPart, data-only (rendering is the UI's job):
+		// {action, name, unicode}, name = the emoji itself for WhatsApp;
+		// removals carry no emoji on this service.
 		reactionData := map[string]any{"action": "removed"}
 		if emoji != "" {
 			reactionData = map[string]any{
@@ -258,7 +258,6 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 			Version: "1",
 			Type:    "data",
 			Kind:    "reaction",
-			Text:    emoji,
 			Data:    payload,
 			ReMessageID: externalID(
 				session.Address, evt.Info.Chat.User,

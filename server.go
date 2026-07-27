@@ -460,9 +460,9 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 	return message, 0, nil
 }
 
-// buildReaction sends a cross-service ReactionPart (type data, text = the
-// Unicode display form, data {action, unicode}). The emoji sent to WhatsApp
-// is the Unicode form; empty removes (the wire convention on this service).
+// buildReaction sends a cross-service ReactionPart (type data, data-only:
+// {action, unicode}). The emoji sent to WhatsApp is the Unicode form; empty
+// removes (the wire convention on this service).
 func buildReaction(
 	session *Session, chat types.JID, content MessageContent,
 ) (*waE2E.Message, int, error) {
@@ -472,19 +472,18 @@ func buildReaction(
 			fmt.Errorf("reaction without a valid re_message_id: %s", content.ReMessageID)
 	}
 
-	emoji := content.Text
-	if len(content.Data) > 0 {
-		var data struct {
-			Action  string `json:"action"`
-			Unicode string `json:"unicode"`
-		}
-		if err := json.Unmarshal(content.Data, &data); err == nil {
-			if data.Action == "removed" {
-				emoji = ""
-			} else if emoji == "" {
-				emoji = data.Unicode
-			}
-		}
+	var data struct {
+		Action  string `json:"action"`
+		Unicode string `json:"unicode"`
+	}
+	if err := json.Unmarshal(content.Data, &data); err != nil {
+		return nil, http.StatusUnprocessableEntity,
+			fmt.Errorf("invalid reaction data: %w", err)
+	}
+
+	emoji := data.Unicode
+	if data.Action == "removed" {
+		emoji = ""
 	}
 
 	return session.Client.BuildReaction(chat, sender, id, emoji), 0, nil
