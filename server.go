@@ -220,10 +220,6 @@ func buildOutgoingMessage(
 
 	switch content.Type {
 	case "text":
-		// Legacy reaction shape (pre cross-service ReactionPart rows).
-		if content.Kind == "reaction" {
-			return buildReaction(session, chat, content)
-		}
 
 		text := markdownToWhatsApp(content.Text)
 		if ctx := replyContext(session, content); ctx != nil {
@@ -464,10 +460,9 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 	return message, 0, nil
 }
 
-// buildReaction handles both reaction shapes: the cross-service ReactionPart
-// (type data, data {action, name, unicode}) and the legacy TextPart. The
-// emoji sent to WhatsApp is the Unicode display form; empty removes (the
-// wire convention on this service).
+// buildReaction sends a cross-service ReactionPart (type data, text = the
+// Unicode display form, data {action, unicode}). The emoji sent to WhatsApp
+// is the Unicode form; empty removes (the wire convention on this service).
 func buildReaction(
 	session *Session, chat types.JID, content MessageContent,
 ) (*waE2E.Message, int, error) {
