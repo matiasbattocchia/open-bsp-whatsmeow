@@ -87,6 +87,19 @@ func canonicalUser(session *Session, jid, alt types.JID) string {
 
 // contactAddressFor picks the row-level contact_address for a message
 // source: the group participant for groups, otherwise the DM peer.
+// conversationAddressFor is the chat's address: the group JID for groups,
+// the peer's canonical bare number for direct chats — the value of
+// messages.conversation_address.
+func conversationAddressFor(session *Session, source types.MessageSource) string {
+	if source.IsGroup {
+		return source.Chat.String()
+	}
+	if source.IsFromMe {
+		return canonicalUser(session, source.Chat, source.RecipientAlt)
+	}
+	return canonicalUser(session, source.Chat, source.SenderAlt)
+}
+
 func contactAddressFor(session *Session, source types.MessageSource) string {
 	if source.IsGroup {
 		return canonicalUser(session, source.Sender, source.SenderAlt)
@@ -389,10 +402,11 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	}
 
 	message := WebhookMessage{
-		ExternalID:     externalID(session.Address, chat.User, senderSegment, evt.Info.ID),
-		ContactAddress: contactAddressFor(session, evt.Info.MessageSource),
-		Content:        *content,
-		Timestamp:      evt.Info.Timestamp.Format(time.RFC3339),
+		ExternalID:          externalID(session.Address, chat.User, senderSegment, evt.Info.ID),
+		ContactAddress:      contactAddressFor(session, evt.Info.MessageSource),
+		ConversationAddress: conversationAddressFor(session, evt.Info.MessageSource),
+		Content:             *content,
+		Timestamp:           evt.Info.Timestamp.Format(time.RFC3339),
 	}
 
 	if mediaErr != nil {
@@ -408,8 +422,6 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	batch := WebhookBatch{OrganizationAddress: session.Address}
 
 	if evt.Info.IsGroup {
-		message.GroupAddress = chat.String()
-
 		// First message from this group this process lifetime: send the
 		// subject so the webhook can name the conversation. Off the event
 		// loop — GetGroupInfo is a server round-trip.
@@ -482,14 +494,12 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 	for _, id := range evt.MessageIDs {
 		// Delivery/read receipts are always about our own sent messages.
 		status := WebhookStatus{
-			ExternalID:     externalID(session.Address, evt.Chat.User, session.Address, id),
-			ContactAddress: contactAddressFor(session, evt.MessageSource),
+			ExternalID:          externalID(session.Address, evt.Chat.User, session.Address, id),
+			ContactAddress:      contactAddressFor(session, evt.MessageSource),
+			ConversationAddress: conversationAddressFor(session, evt.MessageSource),
 			Status: map[string]any{
 				key: evt.Timestamp.Format(time.RFC3339),
 			},
-		}
-		if evt.IsGroup {
-			status.GroupAddress = evt.Chat.String()
 		}
 		batch.Statuses = append(batch.Statuses, status)
 	}

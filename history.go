@@ -106,14 +106,12 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			}
 
 			message := WebhookMessage{
-				ExternalID:     externalID(session.Address, chat.User, senderSegment, parsed.Info.ID),
-				ContactAddress: contactAddressFor(session, parsed.Info.MessageSource),
-				Content:        *content,
-				Status:         historyStatus(webMsg, parsed),
-				Timestamp:      parsed.Info.Timestamp.Format(time.RFC3339),
-			}
-			if parsed.Info.IsGroup {
-				message.GroupAddress = chat.String()
+				ExternalID:          externalID(session.Address, chat.User, senderSegment, parsed.Info.ID),
+				ContactAddress:      contactAddressFor(session, parsed.Info.MessageSource),
+				ConversationAddress: conversationAddressFor(session, parsed.Info.MessageSource),
+				Content:             *content,
+				Status:              historyStatus(webMsg, parsed),
+				Timestamp:           parsed.Info.Timestamp.Format(time.RFC3339),
 			}
 			if parsed.Info.IsFromMe {
 				message.Direction = "outgoing"

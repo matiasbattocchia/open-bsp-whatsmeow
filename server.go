@@ -62,7 +62,7 @@ type dispatchRequest struct {
 		ExternalID          string         `json:"external_id"`
 		OrganizationAddress string         `json:"organization_address"`
 		ContactAddress      string         `json:"contact_address"`
-		GroupAddress        string         `json:"group_address"`
+		ConversationAddress string         `json:"conversation_address"`
 		Content             MessageContent `json:"content"`
 		Status              map[string]any `json:"status"`
 	} `json:"record"`
@@ -468,13 +468,19 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 }
 
 func dispatchChatJID(req dispatchRequest) (types.JID, error) {
-	if req.Record.GroupAddress != "" {
-		return types.ParseJID(req.Record.GroupAddress)
+	// conversation_address is the chat: a full JID for groups (contains "@"),
+	// the peer's bare number for direct chats.
+	if addr := req.Record.ConversationAddress; addr != "" {
+		if strings.Contains(addr, "@") {
+			return types.ParseJID(addr)
+		}
+		return types.NewJID(addr, types.DefaultUserServer), nil
 	}
+	// Legacy rows that predate conversation_address.
 	if req.Record.ContactAddress != "" {
 		return types.NewJID(req.Record.ContactAddress, types.DefaultUserServer), nil
 	}
-	return types.JID{}, fmt.Errorf("record has neither contact_address nor group_address")
+	return types.JID{}, fmt.Errorf("record has no conversation_address")
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
