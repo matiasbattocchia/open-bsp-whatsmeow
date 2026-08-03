@@ -115,7 +115,7 @@ Parity notes vs the `whatsapp` (Cloud API) service:
   attachments. History rows always carry explicit final statuses — never
   `pending`, which is OpenBSP's automation gate.
 - LID-only peers the store has no phone mapping for fall back to the LID
-  digits as contact_address (rare; the mapping fills in as messages flow).
+  digits as sender_address (rare; the mapping fills in as messages flow).
 
 Also working: group subjects → conversation names (on first sight and on
 renames), history sync import (messages + pushnames, chunked), LID → phone

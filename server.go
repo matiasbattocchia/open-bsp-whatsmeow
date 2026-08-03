@@ -61,7 +61,6 @@ type dispatchRequest struct {
 		ID                  string         `json:"id"`
 		ExternalID          string         `json:"external_id"`
 		OrganizationAddress string         `json:"organization_address"`
-		ContactAddress      string         `json:"contact_address"`
 		ConversationAddress string         `json:"conversation_address"`
 		Content             MessageContent `json:"content"`
 		Status              map[string]any `json:"status"`
@@ -497,10 +496,6 @@ func dispatchChatJID(req dispatchRequest) (types.JID, error) {
 			return types.ParseJID(addr)
 		}
 		return types.NewJID(addr, types.DefaultUserServer), nil
-	}
-	// Legacy rows that predate conversation_address.
-	if req.Record.ContactAddress != "" {
-		return types.NewJID(req.Record.ContactAddress, types.DefaultUserServer), nil
 	}
 	return types.JID{}, fmt.Errorf("record has no conversation_address")
 }

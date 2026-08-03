@@ -85,11 +85,11 @@ func canonicalUser(session *Session, jid, alt types.JID) string {
 	return jid.User
 }
 
-// contactAddressFor picks the row-level contact_address for a message
-// source: the group participant for groups, otherwise the DM peer.
 // conversationAddressFor is the chat's address: the group JID for groups,
 // the peer's canonical bare number for direct chats — the value of
-// messages.conversation_address.
+// messages.conversation_address. senderAddressFor is the message author —
+// the group participant, or the DM peer — and empty when the account itself
+// spoke (IsFromMe), which is how OpenBSP tells a send from a receipt.
 func conversationAddressFor(session *Session, source types.MessageSource) string {
 	if source.IsGroup {
 		return source.Chat.String()
@@ -100,12 +100,12 @@ func conversationAddressFor(session *Session, source types.MessageSource) string
 	return canonicalUser(session, source.Chat, source.SenderAlt)
 }
 
-func contactAddressFor(session *Session, source types.MessageSource) string {
+func senderAddressFor(session *Session, source types.MessageSource) string {
+	if source.IsFromMe {
+		return ""
+	}
 	if source.IsGroup {
 		return canonicalUser(session, source.Sender, source.SenderAlt)
-	}
-	if source.IsFromMe {
-		return canonicalUser(session, source.Chat, source.RecipientAlt)
 	}
 	return canonicalUser(session, source.Chat, source.SenderAlt)
 }
@@ -419,8 +419,8 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 
 	message := WebhookMessage{
 		ExternalID:          externalID(session.Address, chat.User, senderSegment, evt.Info.ID),
-		ContactAddress:      contactAddressFor(session, evt.Info.MessageSource),
 		ConversationAddress: conversationAddressFor(session, evt.Info.MessageSource),
+		SenderAddress:       senderAddressFor(session, evt.Info.MessageSource),
 		Content:             *content,
 		Timestamp:           evt.Info.Timestamp.Format(time.RFC3339),
 	}
@@ -462,17 +462,15 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 
 	if evt.Info.IsFromMe {
 		// Echo (bridge- or phone-sent): explicit status keeps it inert.
-		message.Direction = "outgoing"
 		if message.Status == nil {
 			message.Status = map[string]any{}
 		}
 		message.Status["sent"] = evt.Info.Timestamp.Format(time.RFC3339)
 	} else {
 		// Live incoming: no status, so the pending default arms automation.
-		message.Direction = "incoming"
 		if evt.Info.PushName != "" {
 			batch.Contacts = append(batch.Contacts, WebhookContact{
-				Address: contactAddressFor(session, evt.Info.MessageSource),
+				Address: message.SenderAddress,
 				Extra:   map[string]any{"name": evt.Info.PushName},
 			})
 		}
@@ -511,7 +509,6 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 		// Delivery/read receipts are always about our own sent messages.
 		status := WebhookStatus{
 			ExternalID:          externalID(session.Address, evt.Chat.User, session.Address, id),
-			ContactAddress:      contactAddressFor(session, evt.MessageSource),
 			ConversationAddress: conversationAddressFor(session, evt.MessageSource),
 			Status: map[string]any{
 				key: evt.Timestamp.Format(time.RFC3339),

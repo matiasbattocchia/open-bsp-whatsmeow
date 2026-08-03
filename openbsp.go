@@ -48,14 +48,14 @@ type WebhookGroup struct {
 
 type WebhookMessage struct {
 	ExternalID string `json:"external_id"`
-	Direction  string `json:"direction"` // incoming | outgoing
-	// The individual sender (per-message author). Kept for OpenBSP's legacy
-	// readers; sender derivation happens DB-side from direction + this.
-	ContactAddress string `json:"contact_address,omitempty"`
 	// The chat itself: group JID, or the peer's canonical number for direct
 	// chats. Maps straight to messages.conversation_address.
-	ConversationAddress string         `json:"conversation_address,omitempty"`
-	Content             MessageContent `json:"content"`
+	ConversationAddress string `json:"conversation_address"`
+	// The contact who authored the message (group participant, or the DM
+	// peer). Empty when the account itself spoke (echoes, history) — the
+	// authorship marker OpenBSP branches on.
+	SenderAddress string         `json:"sender_address,omitempty"`
+	Content       MessageContent `json:"content"`
 	// Omitted for live messages (arms OpenBSP automation via the pending
 	// default); explicit for history/echoes so they stay inert.
 	Status    map[string]any `json:"status,omitempty"`
@@ -64,8 +64,7 @@ type WebhookMessage struct {
 
 type WebhookStatus struct {
 	ExternalID          string         `json:"external_id"`
-	ContactAddress      string         `json:"contact_address,omitempty"`
-	ConversationAddress string         `json:"conversation_address,omitempty"`
+	ConversationAddress string         `json:"conversation_address"`
 	Status              map[string]any `json:"status"`
 }
 
