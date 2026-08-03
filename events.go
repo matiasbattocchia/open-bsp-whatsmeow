@@ -140,6 +140,36 @@ func inboundMediaInfo(msg *waE2E.Message) *inboundMedia {
 	return nil
 }
 
+// mentionsFrom collects ContextInfo.MentionedJID — the participants an
+// inbound message tags — as canonical digits. The text already carries
+// WhatsApp's inline "@digits" form, so no name resolution happens here; the
+// directory side of a mention is OpenBSP's to enrich.
+func mentionsFrom(session *Session, msg *waE2E.Message) []Mention {
+	for _, ctx := range []*waE2E.ContextInfo{
+		msg.GetExtendedTextMessage().GetContextInfo(),
+		msg.GetImageMessage().GetContextInfo(),
+		msg.GetVideoMessage().GetContextInfo(),
+		msg.GetDocumentMessage().GetContextInfo(),
+	} {
+		jids := ctx.GetMentionedJID()
+		if len(jids) == 0 {
+			continue
+		}
+		mentions := make([]Mention, 0, len(jids))
+		for _, raw := range jids {
+			jid, err := types.ParseJID(raw)
+			if err != nil {
+				continue
+			}
+			mentions = append(mentions, Mention{
+				Address: canonicalUser(session, jid, types.JID{}),
+			})
+		}
+		return mentions
+	}
+	return nil
+}
+
 // quotedRef pulls the reply target (quoted message id + its sender JID) out
 // of whichever message type carries the ContextInfo.
 func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
@@ -229,10 +259,11 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 	}
 	if text != "" {
 		return &MessageContent{
-			Version: "1",
-			Type:    "text",
-			Kind:    "text",
-			Text:    whatsappToMarkdown(text),
+			Version:  "1",
+			Type:     "text",
+			Kind:     "text",
+			Text:     whatsappToMarkdown(text),
+			Mentions: mentionsFrom(session, evt.Message),
 		}, nil
 	}
 
@@ -296,11 +327,12 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 	}
 
 	content = &MessageContent{
-		Version: "1",
-		Type:    "file",
-		Kind:    media.kind,
-		Text:    whatsappToMarkdown(media.caption),
-		File:    &FilePayload{MimeType: media.mime, Name: media.name},
+		Version:  "1",
+		Type:     "file",
+		Kind:     media.kind,
+		Text:     whatsappToMarkdown(media.caption),
+		File:     &FilePayload{MimeType: media.mime, Name: media.name},
+		Mentions: mentionsFrom(session, evt.Message),
 	}
 
 	if !downloadMedia {
@@ -505,14 +537,23 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 
 	batch := WebhookBatch{OrganizationAddress: session.Address}
 
+	// Group receipts are per participant, so the value is a map keyed by the
+	// reader's canonical digits — OpenBSP's status merge is recursive, so
+	// readers accumulate key by key. Direct chats keep the scalar: one peer,
+	// one fact.
+	var value any = evt.Timestamp.Format(time.RFC3339)
+	if evt.IsGroup {
+		value = map[string]any{
+			canonicalUser(session, evt.Sender, evt.SenderAlt): evt.Timestamp.Format(time.RFC3339),
+		}
+	}
+
 	for _, id := range evt.MessageIDs {
 		// Delivery/read receipts are always about our own sent messages.
 		status := WebhookStatus{
 			ExternalID:          externalID(session.Address, evt.Chat.User, session.Address, id),
 			ConversationAddress: conversationAddressFor(session, evt.MessageSource),
-			Status: map[string]any{
-				key: evt.Timestamp.Format(time.RFC3339),
-			},
+			Status:              map[string]any{key: value},
 		}
 		batch.Statuses = append(batch.Statuses, status)
 	}

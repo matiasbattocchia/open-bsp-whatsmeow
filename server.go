@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -206,6 +207,34 @@ func optString(value string) *string {
 	return proto.String(value)
 }
 
+// encodeMentions rewrites @Name tokens to WhatsApp's inline @digits form and
+// returns the full JIDs for ContextInfo.MentionedJID. Entries without an
+// address are skipped; without a name the text is left as the composer wrote
+// it (it may already carry @digits).
+func encodeMentions(content MessageContent, text string) (string, []string) {
+	if len(content.Mentions) == 0 {
+		return text, nil
+	}
+
+	// Longest name first, so "@Ana María" is not half-claimed by "@Ana".
+	mentions := append([]Mention(nil), content.Mentions...)
+	sort.Slice(mentions, func(i, j int) bool {
+		return len(mentions[i].Name) > len(mentions[j].Name)
+	})
+
+	jids := make([]string, 0, len(mentions))
+	for _, m := range mentions {
+		if m.Address == "" {
+			continue
+		}
+		jids = append(jids, types.NewJID(m.Address, types.DefaultUserServer).String())
+		if m.Name != "" {
+			text = strings.ReplaceAll(text, "@"+m.Name, "@"+m.Address)
+		}
+	}
+	return text, jids
+}
+
 // buildOutgoingMessage converts an OpenBSP content Part into a WhatsApp
 // message. Feature parity with the 'whatsapp' (Cloud API) dispatcher: text,
 // reaction, media kinds, location, contacts. Templates are the one
@@ -221,7 +250,13 @@ func buildOutgoingMessage(
 	case "text":
 
 		text := markdownToWhatsApp(content.Text)
-		if ctx := replyContext(session, content); ctx != nil {
+		text, mentioned := encodeMentions(content, text)
+		ctx := replyContext(session, content)
+		if ctx != nil || len(mentioned) > 0 {
+			if ctx == nil {
+				ctx = &waE2E.ContextInfo{}
+			}
+			ctx.MentionedJID = mentioned
 			return &waE2E.Message{
 				ExtendedTextMessage: &waE2E.ExtendedTextMessage{
 					Text:        proto.String(text),

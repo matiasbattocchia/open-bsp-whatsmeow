@@ -97,6 +97,18 @@ type MessageContent struct {
 	Data        json.RawMessage `json:"data,omitempty"`
 	ReMessageID string          `json:"re_message_id,omitempty"`
 	Forwarded   bool            `json:"forwarded,omitempty"`
+	Mentions    []Mention       `json:"mentions,omitempty"`
+}
+
+// Mention is a soft reference to who the text calls out. Address is the
+// participant's canonical digits (WhatsApp's inline form in the text is
+// "@digits"); Name is the display text a composer used ("@Ana"), which
+// outbound sends substitute back to @digits. AgentID is OpenBSP's
+// member-space key and passes through untouched.
+type Mention struct {
+	Address string `json:"address,omitempty"`
+	AgentID string `json:"agent_id,omitempty"`
+	Name    string `json:"name,omitempty"`
 }
 
 // LocationData mirrors the Cloud API location object used by the
