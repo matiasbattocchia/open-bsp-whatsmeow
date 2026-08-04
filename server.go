@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"time"
@@ -43,6 +45,16 @@ func (s *Server) ListenAndServe() error {
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A panic would otherwise kill the connection with no response —
+		// the dispatcher reads that as a network (transient) error. Answer
+		// 500 instead: still transient, but logged and well-formed.
+		defer func() {
+			if rec := recover(); rec != nil {
+				s.log.Errorf("panic in %s %s: %v\n%s", r.Method, r.URL.Path, rec, debug.Stack())
+				http.Error(w, fmt.Sprintf("panic: %v", rec), http.StatusInternalServerError)
+			}
+		}()
+
 		token := r.Header.Get("Authorization")
 		if token != "Bearer "+s.cfg.BridgeToken {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -50,6 +62,29 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r)
 	}
+}
+
+// sendErrorStatus maps a SendMessage failure onto the dispatcher's
+// transient/permanent split. Connectivity and timeouts stay 5xx — the
+// dispatch cron retries; what the message or its recipient makes impossible
+// is 4xx — the dispatcher stamps the row failed instead of re-sending it
+// every minute for 12 hours. ErrServerReturnedError is on the permanent
+// side deliberately: the server actively rejected this message, and the
+// same bytes will be rejected again (mirrors whatsapp-dispatcher, where
+// unknown Meta codes default to permanent).
+func sendErrorStatus(err error) int {
+	for _, permanent := range []error{
+		whatsmeow.ErrBroadcastListUnsupported,
+		whatsmeow.ErrUnknownServer,
+		whatsmeow.ErrRecipientADJID,
+		whatsmeow.ErrInvalidInlineBotID,
+		whatsmeow.ErrServerReturnedError,
+	} {
+		if errors.Is(err, permanent) {
+			return http.StatusUnprocessableEntity
+		}
+	}
+	return http.StatusBadGateway
 }
 
 // dispatchRequest mirrors the connector dispatcher contract (see
@@ -107,7 +142,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 		resp, err := session.Client.SendMessage(r.Context(), chat, message)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadGateway)
+			http.Error(w, err.Error(), sendErrorStatus(err))
 			return
 		}
 
@@ -248,6 +283,9 @@ func buildOutgoingMessage(
 
 	switch content.Type {
 	case "text":
+		if strings.TrimSpace(content.Text) == "" {
+			return nil, http.StatusUnprocessableEntity, fmt.Errorf("text message with empty text")
+		}
 
 		text := markdownToWhatsApp(content.Text)
 		text, mentioned := encodeMentions(content, text)
