@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -217,7 +219,14 @@ func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (st
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("media upload responded %d", resp.StatusCode)
+		// Include the body: a 402 carries the billing-cap reason (e.g.
+		// "Usage limit reached for storage"), which ends up verbatim in the
+		// message's status.errors for the org to see.
+		reason, _ := io.ReadAll(io.LimitReader(resp.Body, 256))
+		return "", fmt.Errorf(
+			"media upload responded %d: %s", resp.StatusCode,
+			strings.TrimSpace(string(reason)),
+		)
 	}
 
 	var result struct {
