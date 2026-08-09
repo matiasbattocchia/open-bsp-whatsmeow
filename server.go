@@ -577,6 +577,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		OrganizationID string `json:"organization_id"`
 		PhoneNumber    string `json:"phone_number"`
+		// Optional: pairs a personal session for this member instead of the
+		// org's shared inbox. Authorization happened in the management
+		// function; the bridge just carries it through to the mapping and
+		// the connected event.
+		AgentID string `json:"agent_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -587,7 +592,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.manager.CreateSession(r.Context(), req.OrganizationID, req.PhoneNumber)
+	result, err := s.manager.CreateSession(r.Context(), req.OrganizationID, req.PhoneNumber, req.AgentID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

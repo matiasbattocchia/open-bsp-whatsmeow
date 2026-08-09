@@ -21,6 +21,9 @@ type Session struct {
 	Client         *whatsmeow.Client
 	OrganizationID string
 	Address        string
+	// Empty for the org's shared inbox; set, the member whose personal
+	// session this is (organizations_addresses.agent_id).
+	AgentID string
 	// Set while the session is pairing; used to surface QR rotation and
 	// completion to the polling endpoint.
 	Pending *PendingSession
@@ -95,7 +98,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			continue
 		}
 
-		session := m.register(device, mapping.OrganizationID, mapping.Address)
+		session := m.register(device, mapping.OrganizationID, mapping.Address, mapping.AgentID)
 		if err := session.Client.Connect(); err != nil {
 			m.log.Errorf("Connect %s failed: %v", mapping.Address, err)
 		}
@@ -104,12 +107,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) register(device *store.Device, organizationID, address string) *Session {
+func (m *Manager) register(device *store.Device, organizationID, address, agentID string) *Session {
 	client := whatsmeow.NewClient(device, m.log.Sub("client/"+address))
 	session := &Session{
 		Client:         client,
 		OrganizationID: organizationID,
 		Address:        address,
+		AgentID:        agentID,
 	}
 	client.AddEventHandler(func(evt any) { m.handleEvent(session, evt) })
 
@@ -180,11 +184,12 @@ func (p *PendingSession) state() *PairingState {
 // polling) or, when phoneNumber is given, a phone pairing code. Pairing
 // completes asynchronously: on PairSuccess the event handler saves the
 // mapping, notifies whatsapp-web-management, and flips the pending status.
-func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber string) (*PairingState, error) {
+func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber, agentID string) (*PairingState, error) {
 	device := m.store.Container.NewDevice()
 	session := &Session{
 		Client:         whatsmeow.NewClient(device, m.log.Sub("client/pairing")),
 		OrganizationID: organizationID,
+		AgentID:        agentID,
 	}
 
 	pending := &PendingSession{
@@ -312,6 +317,7 @@ func (m *Manager) completePairing(session *Session, ownJID types.JID) {
 		DeviceJID:      ownJID.String(),
 		OrganizationID: session.OrganizationID,
 		Address:        session.Address,
+		AgentID:        session.AgentID,
 	}); err != nil {
 		m.log.Errorf("Save mapping for %s failed: %v", ownJID, err)
 	}
@@ -320,6 +326,7 @@ func (m *Manager) completePairing(session *Session, ownJID types.JID) {
 		Event:          "connected",
 		OrganizationID: session.OrganizationID,
 		Address:        session.Address,
+		AgentID:        session.AgentID,
 		Extra:          map[string]any{"device_jid": ownJID.String()},
 	}); err != nil {
 		m.log.Errorf("Notify connected for %s failed: %v", ownJID, err)

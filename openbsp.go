@@ -241,10 +241,12 @@ func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (st
 // SessionEvent notifies whatsapp-web-management of a lifecycle change; the
 // management function owns all onboarding-related DB writes.
 type SessionEvent struct {
-	Event          string         `json:"event"` // connected | logged_out
-	OrganizationID string         `json:"organization_id"`
-	Address        string         `json:"address"`
-	Extra          map[string]any `json:"extra,omitempty"`
+	Event          string `json:"event"` // connected | logged_out
+	OrganizationID string `json:"organization_id"`
+	Address        string `json:"address"`
+	// Empty for the org's shared inbox; set for a personal session.
+	AgentID string         `json:"agent_id,omitempty"`
+	Extra   map[string]any `json:"extra,omitempty"`
 }
 
 func (o *OpenBSP) PostSessionEvent(event SessionEvent) error {
