@@ -6,11 +6,16 @@ import (
 )
 
 // Config is read once from the environment; the bridge is stateless and
-// disposable — all durable state lives in Postgres (whatsmeow schema).
+// disposable — all durable state lives in the database DATABASE_URL points at.
 type Config struct {
-	// Postgres DSN. The whatsmeow session store and the bridge's own
-	// session-mapping table live in the `whatsmeow` schema; a search_path
-	// option is appended automatically if the DSN has none.
+	// Database DSN; the engine follows the scheme.
+	//
+	//	postgres://…  the whatsmeow session store and the bridge's own
+	//	              session-mapping table live in the `whatsmeow` schema;
+	//	              a search_path option is appended if the DSN has none.
+	//	file:… │ sqlite:…
+	//	              embedded SQLite, no server to run — the file holds both.
+	//	              Put it on a persistent volume: it IS the session.
 	DatabaseURL string
 	// Base URL of the OpenBSP edge functions, e.g.
 	// http://kong:8000/functions/v1

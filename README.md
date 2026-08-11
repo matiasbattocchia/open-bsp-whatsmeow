@@ -23,8 +23,10 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 ```
 
 - **Stateless container** — sessions (Signal keys, device state) live in the
-  `whatsmeow` schema of the Postgres pointed to by `DATABASE_URL`. OpenBSP
-  never reads that schema; kill/update/restart the container freely.
+  database `DATABASE_URL` points at: the `whatsmeow` schema of a Postgres
+  (OpenBSP never reads that schema), or an embedded SQLite file when there is
+  no database to lend. Either way the container is disposable —
+  kill/update/restart it freely; the state is not in it.
 - **No Supabase credentials** — the bridge only holds the shared
   `BRIDGE_TOKEN` and talks to the three edge functions over HTTP.
 - **One replica by design** — a WhatsApp session is a single WebSocket.
@@ -35,7 +37,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 
 | Env             | Required | Description                                             |
 | --------------- | -------- | ------------------------------------------------------- |
-| `DATABASE_URL`  | yes      | Postgres DSN; `search_path=whatsmeow` and `default_query_exec_mode=simple_protocol` appended if absent (the latter is required behind transaction-mode poolers like Supavisor 6543) |
+| `DATABASE_URL`  | yes      | Database DSN; the engine follows the scheme. `postgres://…` — `search_path=whatsmeow` and `default_query_exec_mode=simple_protocol` appended if absent (the latter is required behind transaction-mode poolers like Supavisor 6543). `file:…` / `sqlite:…` — embedded SQLite, no server to run; `foreign_keys`, `journal_mode=WAL` and `busy_timeout` pragmas appended if absent. Put the file on a persistent volume: it holds the session |
 | `OPENBSP_URL`   | yes      | Edge functions base, e.g. `http://kong:8000/functions/v1` |
 | `BRIDGE_TOKEN`  | yes      | Shared bearer token (must match `WHATSAPP_WEB_TOKEN` in OpenBSP) |
 | `LISTEN_ADDR`   | no       | Default `:$PORT` (PaaS convention) or `:8081`            |
@@ -61,8 +63,12 @@ services:
     build: https://github.com/matiasbattocchia/open-bsp-whatsmeow.git
     environment:
       DATABASE_URL: postgres://postgres:postgres@db:5432/postgres
+      # …or, with no Postgres to lend — the file is the session, so it must
+      # outlive the container:
+      # DATABASE_URL: file:/data/whatsmeow.db
       OPENBSP_URL: http://kong:8000/functions/v1
       BRIDGE_TOKEN: change-me
+    # volumes: ["whatsmeow-data:/data"]
     ports: ["8081:8081"]
 ```
 
