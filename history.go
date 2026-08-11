@@ -31,7 +31,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 
 	// PUSH_NAME syncs: contact names.
 	if pushnames := evt.Data.GetPushnames(); len(pushnames) > 0 {
-		batch := WebhookBatch{OrganizationAddress: session.Address}
+		batch := WebhookBatch{OrganizationAddress: session.Address, History: true}
 		for _, pushname := range pushnames {
 			jid, err := types.ParseJID(pushname.GetID())
 			if err != nil || pushname.GetPushname() == "" {
@@ -49,7 +49,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 		}
 	}
 
-	pending := WebhookBatch{OrganizationAddress: session.Address}
+	pending := WebhookBatch{OrganizationAddress: session.Address, History: true}
 	flush := func() {
 		if len(pending.Messages) == 0 {
 			return
@@ -57,7 +57,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 		if err := m.openbsp.PostBatch(pending); err != nil {
 			m.log.Errorf("Post history batch failed: %v", err)
 		}
-		pending = WebhookBatch{OrganizationAddress: session.Address}
+		pending = WebhookBatch{OrganizationAddress: session.Address, History: true}
 	}
 
 	imported, skipped := 0, 0

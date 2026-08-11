@@ -32,13 +32,16 @@ func NewOpenBSP(cfg *Config) *OpenBSP {
 // WebhookBatch mirrors the connector webhook contract (see
 // supabase/functions/_shared/connector_webhook.ts in open-bsp-api).
 type WebhookBatch struct {
-	OrganizationAddress string           `json:"organization_address"`
-	Messages            []WebhookMessage `json:"messages,omitempty"`
-	Statuses            []WebhookStatus  `json:"statuses,omitempty"`
-	Contacts            []WebhookContact `json:"contacts,omitempty"`
-	Groups              []WebhookGroup   `json:"groups,omitempty"`
-	Edits               []WebhookEdit    `json:"edits,omitempty"`
-	Revokes             []WebhookRevoke  `json:"revokes,omitempty"`
+	OrganizationAddress string `json:"organization_address"`
+	// True on history-import batches (pairing backfill) — the connector flags
+	// those rows so automation skips them; never set on live traffic.
+	History  bool             `json:"history,omitempty"`
+	Messages []WebhookMessage `json:"messages,omitempty"`
+	Statuses []WebhookStatus  `json:"statuses,omitempty"`
+	Contacts []WebhookContact `json:"contacts,omitempty"`
+	Groups   []WebhookGroup   `json:"groups,omitempty"`
+	Edits    []WebhookEdit    `json:"edits,omitempty"`
+	Revokes  []WebhookRevoke  `json:"revokes,omitempty"`
 }
 
 // WebhookGroup carries group metadata; the webhook applies Name to the
