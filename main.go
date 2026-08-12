@@ -9,8 +9,18 @@ import (
 	"context"
 	"os"
 
+	"go.mau.fi/whatsmeow/store"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
+
+// The name the phone lists under Linked devices — whatsmeow's default is its
+// own. It rides DeviceProps in the registration payload, so it is fixed at
+// PAIRING time: changing it renames nothing that is already linked, only what
+// pairs next. DEVICE_NAME overrides it for a deployment that wants its own
+// branding on the phone.
+func init() {
+	store.SetOSInfo(envOr("DEVICE_NAME", "OpenBSP"), [3]uint32{0, 1, 0})
+}
 
 func main() {
 	log := waLog.Stdout("bridge", envOr("LOG_LEVEL", "INFO"), true)
