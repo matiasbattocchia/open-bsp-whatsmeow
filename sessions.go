@@ -211,42 +211,49 @@ func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber
 	m.pending[pending.ID] = pending
 	m.mu.Unlock()
 
-	// Use a background context for the QR channel: it must outlive the HTTP
-	// request that started the pairing.
-	qrChan, err := session.Client.GetQRChannel(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("qr channel: %w", err)
+	// The QR channel belongs to the QR flow ONLY. Phone pairing has its own
+	// out-of-band code, and the channel would still run its QR clock beside
+	// it — six rotations, then a "timeout" event that says nothing about the
+	// code the person is typing. Opening it there killed the pairing after
+	// ~2 minutes.
+	if phoneNumber == "" {
+		// Use a background context for the QR channel: it must outlive the
+		// HTTP request that started the pairing.
+		qrChan, err := session.Client.GetQRChannel(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("qr channel: %w", err)
+		}
+
+		// Consume the QR channel for the whole pairing window, keeping the
+		// latest code available to the polling endpoint.
+		go func() {
+			for item := range qrChan {
+				switch item.Event {
+				case "code":
+					pending.mu.Lock()
+					pending.qrCode = item.Code
+					pending.mu.Unlock()
+				case whatsmeow.QRChannelSuccess.Event:
+					// completePairing (via the PairSuccess event) flips the
+					// status; nothing to do here.
+				default: // timeout, error, multidevice-not-enabled, ...
+					pending.mu.Lock()
+					if pending.status == "pending" {
+						pending.status = "error"
+						pending.errMessage = item.Event
+						if item.Error != nil {
+							pending.errMessage = item.Error.Error()
+						}
+					}
+					pending.mu.Unlock()
+				}
+			}
+		}()
 	}
 
 	if err := session.Client.Connect(); err != nil {
 		return nil, fmt.Errorf("connect for pairing: %w", err)
 	}
-
-	// Consume the QR channel for the whole pairing window, keeping the
-	// latest code available to the polling endpoint.
-	go func() {
-		for item := range qrChan {
-			switch item.Event {
-			case "code":
-				pending.mu.Lock()
-				pending.qrCode = item.Code
-				pending.mu.Unlock()
-			case whatsmeow.QRChannelSuccess.Event:
-				// completePairing (via the PairSuccess event) flips the
-				// status; nothing to do here.
-			default: // timeout, error, multidevice-not-enabled, ...
-				pending.mu.Lock()
-				if pending.status == "pending" {
-					pending.status = "error"
-					pending.errMessage = item.Event
-					if item.Error != nil {
-						pending.errMessage = item.Error.Error()
-					}
-				}
-				pending.mu.Unlock()
-			}
-		}
-	}()
 
 	if phoneNumber != "" {
 		code, err := session.Client.PairPhone(
@@ -294,6 +301,32 @@ func (m *Manager) PendingState(id string) *PairingState {
 		return nil
 	}
 	return pending.state()
+}
+
+// failPending ends an in-flight pairing — a session that never reached an
+// address — and drops its client. Sessions that already paired are left
+// alone: their disconnects are whatsmeow's ordinary reconnect churn, and
+// re-pairing is not what a flaky network calls for. Disconnect runs off the
+// event goroutine that delivered the event, which is the one holding the
+// socket.
+func (m *Manager) failPending(session *Session, reason string) {
+	if session.Address != "" || session.Pending == nil {
+		return
+	}
+
+	session.Pending.mu.Lock()
+	stale := session.Pending.status != "pending"
+	if !stale {
+		session.Pending.status = "error"
+		session.Pending.errMessage = reason
+	}
+	session.Pending.mu.Unlock()
+	if stale {
+		return
+	}
+
+	m.log.Warnf("Pairing %s failed: %s", session.Pending.ID, reason)
+	go session.Client.Disconnect()
 }
 
 // completePairing is called from the event handler on PairSuccess/Connected

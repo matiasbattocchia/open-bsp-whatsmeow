@@ -29,6 +29,17 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 			m.completePairing(session, *session.Client.Store.ID)
 		}
 
+	case *events.Disconnected:
+		// A pairing socket that drops is DEAD, not slow: WhatsApp ends the
+		// stream ~3 minutes after issuing a phone code, and the code dies with
+		// it. Fail the pending session now — otherwise the poll keeps
+		// answering "pending" until the 10-minute TTL, promising a code the
+		// server has already forgotten.
+		m.failPending(session, "pairing window closed — request a new code")
+
+	case *events.StreamError:
+		m.failPending(session, "pairing stream error: "+v.Code)
+
 	case *events.LoggedOut:
 		m.log.Warnf("Session %s logged out (reason %d)", session.Address, v.Reason)
 		if err := m.openbsp.PostSessionEvent(SessionEvent{
