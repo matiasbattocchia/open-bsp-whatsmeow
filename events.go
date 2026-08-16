@@ -540,10 +540,28 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 	switch evt.Type {
 	case types.ReceiptTypeDelivered:
 		key = "delivered"
-	case types.ReceiptTypeRead:
+	case types.ReceiptTypeRead, types.ReceiptTypeReadSelf:
 		key = "read"
 	default:
 		return
+	}
+
+	// The message AUTHOR segment of the external ID. Receipts from others are
+	// always about our own sends — but our own devices echo receipts too (the
+	// phone read the peer's message), and those are about the OTHER side's
+	// messages: MessageSender names the author in groups, and in a direct chat
+	// the author is the peer. Hardcoding session.Address here minted IDs no
+	// message row carries, so no self receipt ever merged.
+	author := session.Address
+	if evt.IsFromMe {
+		if evt.IsGroup {
+			if evt.MessageSender.IsEmpty() {
+				return // unattributable: don't mint IDs no row can match
+			}
+			author = canonicalUser(session, evt.MessageSender, types.JID{})
+		} else {
+			author = conversationAddressFor(session, evt.MessageSource)
+		}
 	}
 
 	batch := WebhookBatch{OrganizationAddress: session.Address}
@@ -560,9 +578,8 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 	}
 
 	for _, id := range evt.MessageIDs {
-		// Delivery/read receipts are always about our own sent messages.
 		status := WebhookStatus{
-			ExternalID:          externalID(session.Address, evt.Chat.User, session.Address, id),
+			ExternalID:          externalID(session.Address, evt.Chat.User, author, id),
 			ConversationAddress: conversationAddressFor(session, evt.MessageSource),
 			Status:              map[string]any{key: value},
 		}
