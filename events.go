@@ -379,11 +379,24 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 	)
 	timestamp := evt.Info.Timestamp.Format(time.RFC3339)
 
+	// the edit/revoke's OWN identity: the carrier protocol message, addressed like any
+	// message — so the consumer can log it as a first-class event beside the original
+	ownSegment := session.Address
+	if !evt.Info.IsFromMe {
+		ownSegment = canonicalUser(session, evt.Info.Sender, evt.Info.SenderAlt)
+	}
+	ownID := externalID(session.Address, evt.Info.Chat.User, ownSegment, evt.Info.ID)
+	conversation := conversationAddressFor(session, evt.Info.MessageSource)
+	sender := senderAddressFor(session, evt.Info.MessageSource)
+
 	switch pm.GetType() {
 	case waE2E.ProtocolMessage_REVOKE:
 		batch.Revokes = append(batch.Revokes, WebhookRevoke{
-			OriginalMessageID: original,
-			Timestamp:         timestamp,
+			ExternalID:          ownID,
+			OriginalMessageID:   original,
+			ConversationAddress: conversation,
+			SenderAddress:       sender,
+			Timestamp:           timestamp,
 		})
 	case waE2E.ProtocolMessage_MESSAGE_EDIT:
 		edited := pm.GetEditedMessage()
@@ -405,9 +418,12 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 			return
 		}
 		batch.Edits = append(batch.Edits, WebhookEdit{
-			OriginalMessageID: original,
-			Text:              whatsappToMarkdown(text),
-			Timestamp:         timestamp,
+			ExternalID:          ownID,
+			OriginalMessageID:   original,
+			ConversationAddress: conversation,
+			SenderAddress:       sender,
+			Text:                whatsappToMarkdown(text),
+			Timestamp:           timestamp,
 		})
 	default:
 		return

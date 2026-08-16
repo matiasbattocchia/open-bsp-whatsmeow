@@ -79,14 +79,22 @@ type WebhookContact struct {
 }
 
 type WebhookEdit struct {
-	OriginalMessageID string `json:"original_message_id"`
-	Text              string `json:"text"`
-	Timestamp         string `json:"timestamp"`
+	// The edit's OWN protocol-message id (namespaced like any message id), so the
+	// consumer can log the edit as a first-class event; the original keeps its row.
+	ExternalID          string `json:"external_id,omitempty"`
+	OriginalMessageID   string `json:"original_message_id"`
+	ConversationAddress string `json:"conversation_address,omitempty"`
+	SenderAddress       string `json:"sender_address,omitempty"`
+	Text                string `json:"text"`
+	Timestamp           string `json:"timestamp"`
 }
 
 type WebhookRevoke struct {
-	OriginalMessageID string `json:"original_message_id"`
-	Timestamp         string `json:"timestamp"`
+	ExternalID          string `json:"external_id,omitempty"` // the revoke's own id (see WebhookEdit)
+	OriginalMessageID   string `json:"original_message_id"`
+	ConversationAddress string `json:"conversation_address,omitempty"`
+	SenderAddress       string `json:"sender_address,omitempty"`
+	Timestamp           string `json:"timestamp"`
 }
 
 // MessageContent is a v1 content Part: TextPart (type "text", kinds
