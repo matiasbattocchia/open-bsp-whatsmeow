@@ -459,8 +459,17 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 	}
 
 	mimetype := proto.String(file.MimeType)
-	captionPtr := optString(markdownToWhatsApp(caption))
+	// captions carry mentions the same way text messages do: @Name → @digits inline,
+	// the JIDs on the media message's ContextInfo
+	captionText, captionMentioned := encodeMentions(req.Record.Content, markdownToWhatsApp(caption))
+	captionPtr := optString(captionText)
 	contextInfo := replyContext(session, req.Record.Content)
+	if len(captionMentioned) > 0 {
+		if contextInfo == nil {
+			contextInfo = &waE2E.ContextInfo{}
+		}
+		contextInfo.MentionedJID = captionMentioned
+	}
 
 	message := &waE2E.Message{}
 	switch kind {
