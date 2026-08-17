@@ -122,6 +122,10 @@ type Mention struct {
 	Address string `json:"address,omitempty"`
 	AgentID string `json:"agent_id,omitempty"`
 	Name    string `json:"name,omitempty"`
+	// Lid is the hidden-user digits the composer wrote inline ("@<lid>") in
+	// lid-addressed groups — shipped beside the canonical Address so the
+	// consumer can decode the text token back to a person.
+	Lid string `json:"lid,omitempty"`
 }
 
 // LocationData mirrors the Cloud API location object used by the

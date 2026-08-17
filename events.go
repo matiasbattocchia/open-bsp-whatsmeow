@@ -152,8 +152,10 @@ func inboundMediaInfo(msg *waE2E.Message) *inboundMedia {
 }
 
 // mentionsFrom collects ContextInfo.MentionedJID — the participants an
-// inbound message tags — as canonical digits. The text already carries
-// WhatsApp's inline "@digits" form, so no name resolution happens here; the
+// inbound message tags — as canonical digits. The text carries WhatsApp's
+// inline "@digits" form; in lid-addressed groups those digits are the LID,
+// so the mention ships the lid beside the canonical address for the
+// consumer to decode the token. No name resolution happens here; the
 // directory side of a mention is OpenBSP's to enrich.
 func mentionsFrom(session *Session, msg *waE2E.Message) []Mention {
 	for _, ctx := range []*waE2E.ContextInfo{
@@ -172,9 +174,11 @@ func mentionsFrom(session *Session, msg *waE2E.Message) []Mention {
 			if err != nil {
 				continue
 			}
-			mentions = append(mentions, Mention{
-				Address: canonicalUser(session, jid, types.JID{}),
-			})
+			m := Mention{Address: canonicalUser(session, jid, types.JID{})}
+			if jid.Server == types.HiddenUserServer && m.Address != jid.User {
+				m.Lid = jid.User
+			}
+			mentions = append(mentions, m)
 		}
 		return mentions
 	}
