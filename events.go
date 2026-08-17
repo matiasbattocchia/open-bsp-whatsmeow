@@ -151,13 +151,14 @@ func inboundMediaInfo(msg *waE2E.Message) *inboundMedia {
 	return nil
 }
 
-// mentionsFrom collects ContextInfo.MentionedJID — the participants an
-// inbound message tags — as canonical digits. The text carries WhatsApp's
-// inline "@digits" form; in lid-addressed groups those digits are the LID,
-// so the mention ships the lid beside the canonical address for the
-// consumer to decode the token. No name resolution happens here; the
-// directory side of a mention is OpenBSP's to enrich.
-func mentionsFrom(session *Session, msg *waE2E.Message) []Mention {
+// mentionsIn collects ContextInfo.MentionedJID — the participants an inbound
+// message tags — as canonical digits, AND puts the message text in the same
+// namespace: WhatsApp writes the mention inline as "@digits", which in a
+// lid-addressed chat are the LID's, so the token is rewritten to the
+// canonical digits the Mention carries. Namespace is the bridge's business
+// end to end (outbound, encodeMentions maps back); no name resolution
+// happens here — the directory side of a mention is OpenBSP's to enrich.
+func mentionsIn(session *Session, msg *waE2E.Message, text string) (string, []Mention) {
 	for _, ctx := range []*waE2E.ContextInfo{
 		msg.GetExtendedTextMessage().GetContextInfo(),
 		msg.GetImageMessage().GetContextInfo(),
@@ -174,15 +175,15 @@ func mentionsFrom(session *Session, msg *waE2E.Message) []Mention {
 			if err != nil {
 				continue
 			}
-			m := Mention{Address: canonicalUser(session, jid, types.JID{})}
-			if jid.Server == types.HiddenUserServer && m.Address != jid.User {
-				m.Lid = jid.User
+			address := canonicalUser(session, jid, types.JID{})
+			if address != jid.User {
+				text = strings.ReplaceAll(text, "@"+jid.User, "@"+address)
 			}
-			mentions = append(mentions, m)
+			mentions = append(mentions, Mention{Address: address})
 		}
-		return mentions
+		return text, mentions
 	}
-	return nil
+	return text, nil
 }
 
 // quotedRef pulls the reply target (quoted message id + its sender JID) out
@@ -273,12 +274,13 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 		text = evt.Message.GetExtendedTextMessage().GetText()
 	}
 	if text != "" {
+		body, mentions := mentionsIn(session, evt.Message, whatsappToMarkdown(text))
 		return &MessageContent{
 			Version:  "1",
 			Type:     "text",
 			Kind:     "text",
-			Text:     whatsappToMarkdown(text),
-			Mentions: mentionsFrom(session, evt.Message),
+			Text:     body,
+			Mentions: mentions,
 		}, nil
 	}
 
@@ -341,13 +343,16 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 		return nil, nil
 	}
 
+	captionText, captionMentions := mentionsIn(
+		session, evt.Message, whatsappToMarkdown(media.caption),
+	)
 	content = &MessageContent{
 		Version:  "1",
 		Type:     "file",
 		Kind:     media.kind,
-		Text:     whatsappToMarkdown(media.caption),
+		Text:     captionText,
 		File:     &FilePayload{MimeType: media.mime, Name: media.name},
-		Mentions: mentionsFrom(session, evt.Message),
+		Mentions: captionMentions,
 	}
 
 	if !downloadMedia {
@@ -463,6 +468,8 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	}
 
 	chat := evt.Info.Chat
+	// Free knowledge: the namespace this chat speaks, for outbound mentions.
+	session.noteAddressingMode(chat.String(), evt.Info.AddressingMode)
 
 	senderSegment := session.Address
 	if !evt.Info.IsFromMe {

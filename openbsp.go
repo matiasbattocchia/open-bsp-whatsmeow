@@ -114,18 +114,16 @@ type MessageContent struct {
 }
 
 // Mention is a soft reference to who the text calls out. Address is the
-// participant's canonical digits (WhatsApp's inline form in the text is
-// "@digits"); Name is the display text a composer used ("@Ana"), which
+// participant's canonical digits, and the inline "@digits" in Text is in
+// that same namespace both ways — the bridge translates to and from the
+// chat's wire namespace (LID or phone), so OpenBSP only ever sees canonical
+// addresses. Name is the display text a composer used ("@Ana"), which
 // outbound sends substitute back to @digits. AgentID is OpenBSP's
 // member-space key and passes through untouched.
 type Mention struct {
 	Address string `json:"address,omitempty"`
 	AgentID string `json:"agent_id,omitempty"`
 	Name    string `json:"name,omitempty"`
-	// Lid is the hidden-user digits the composer wrote inline ("@<lid>") in
-	// lid-addressed groups — shipped beside the canonical Address so the
-	// consumer can decode the text token back to a person.
-	Lid string `json:"lid,omitempty"`
 }
 
 // LocationData mirrors the Cloud API location object used by the

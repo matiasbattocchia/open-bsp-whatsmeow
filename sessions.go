@@ -32,6 +32,32 @@ type Session struct {
 	// this process lifetime; re-sending after a restart is harmless.
 	groupsMu   sync.Mutex
 	groupsSent map[string]struct{}
+
+	// A group's addressing mode (phone-number or LID), learned from inbound
+	// traffic and from GetGroupInfo, and kept for the process lifetime: it
+	// decides which namespace an outbound mention must speak.
+	addrMu   sync.Mutex
+	addrMode map[string]types.AddressingMode
+}
+
+// noteAddressingMode records what namespace a chat addresses people in.
+func (s *Session) noteAddressingMode(chat string, mode types.AddressingMode) {
+	if chat == "" || mode == "" {
+		return
+	}
+	s.addrMu.Lock()
+	defer s.addrMu.Unlock()
+	if s.addrMode == nil {
+		s.addrMode = make(map[string]types.AddressingMode)
+	}
+	s.addrMode[chat] = mode
+}
+
+// addressingMode reports the chat's known mode; "" when never observed.
+func (s *Session) addressingMode(chat string) types.AddressingMode {
+	s.addrMu.Lock()
+	defer s.addrMu.Unlock()
+	return s.addrMode[chat]
 }
 
 // markGroupSent reports whether the group still needed its metadata sent and

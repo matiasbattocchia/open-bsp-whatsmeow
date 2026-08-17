@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -246,7 +247,12 @@ func optString(value string) *string {
 // returns the full JIDs for ContextInfo.MentionedJID. Entries without an
 // address are skipped; without a name the text is left as the composer wrote
 // it (it may already carry @digits).
-func encodeMentions(content MessageContent, text string) (string, []string) {
+//
+// The digits are the CHAT's namespace, not ours: a lid-addressed group knows
+// its members by LID, so a phone-number mention neither binds nor belongs —
+// it would publish a number into a chat whose addressing exists to hide it.
+// Callers pass the canonical (phone) address; wireMention maps it across.
+func encodeMentions(session *Session, chat types.JID, content MessageContent, text string) (string, []string) {
 	if len(content.Mentions) == 0 {
 		return text, nil
 	}
@@ -257,17 +263,57 @@ func encodeMentions(content MessageContent, text string) (string, []string) {
 		return len(mentions[i].Name) > len(mentions[j].Name)
 	})
 
+	lidChat := session.chatSpeaksLID(chat)
 	jids := make([]string, 0, len(mentions))
 	for _, m := range mentions {
 		if m.Address == "" {
 			continue
 		}
-		jids = append(jids, types.NewJID(m.Address, types.DefaultUserServer).String())
+		jid := wireMention(session, m.Address, lidChat)
+		jids = append(jids, jid.String())
 		if m.Name != "" {
-			text = strings.ReplaceAll(text, "@"+m.Name, "@"+m.Address)
+			text = strings.ReplaceAll(text, "@"+m.Name, "@"+jid.User)
 		}
 	}
 	return text, jids
+}
+
+// wireMention is a canonical address in the namespace the chat speaks: the
+// LID when the chat is lid-addressed and the mapping is known, the phone
+// number otherwise (including the honest fallback — an unmapped peer keeps
+// the form we have rather than inventing one).
+func wireMention(session *Session, address string, lidChat bool) types.JID {
+	pn := types.NewJID(address, types.DefaultUserServer)
+	if !lidChat {
+		return pn
+	}
+	lid, err := session.Client.Store.LIDs.GetLIDForPN(context.Background(), pn)
+	if err != nil || lid.IsEmpty() {
+		return pn
+	}
+	return lid.ToNonAD()
+}
+
+// chatSpeaksLID reports whether the chat addresses people by LID. Inbound
+// traffic teaches this for free (Session.noteAddressingMode); for a group we
+// have never received from, GetGroupInfo answers — a round trip paid only on
+// a mention-bearing send to an unseen group.
+func (s *Session) chatSpeaksLID(chat types.JID) bool {
+	if mode := s.addressingMode(chat.String()); mode != "" {
+		return mode == types.AddressingModeLID
+	}
+	if chat.Server == types.HiddenUserServer {
+		return true
+	}
+	if chat.Server != types.GroupServer {
+		return false
+	}
+	info, err := s.Client.GetGroupInfo(context.Background(), chat)
+	if err != nil {
+		return false
+	}
+	s.noteAddressingMode(chat.String(), info.AddressingMode)
+	return info.AddressingMode == types.AddressingModeLID
 }
 
 // buildOutgoingMessage converts an OpenBSP content Part into a WhatsApp
@@ -288,7 +334,7 @@ func buildOutgoingMessage(
 		}
 
 		text := markdownToWhatsApp(content.Text)
-		text, mentioned := encodeMentions(content, text)
+		text, mentioned := encodeMentions(session, chat, content, text)
 		ctx := replyContext(session, content)
 		if ctx != nil || len(mentioned) > 0 {
 			if ctx == nil {
@@ -461,7 +507,9 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 	mimetype := proto.String(file.MimeType)
 	// captions carry mentions the same way text messages do: @Name → @digits inline,
 	// the JIDs on the media message's ContextInfo
-	captionText, captionMentioned := encodeMentions(req.Record.Content, markdownToWhatsApp(caption))
+	captionText, captionMentioned := encodeMentions(
+		session, chat, req.Record.Content, markdownToWhatsApp(caption),
+	)
 	captionPtr := optString(captionText)
 	contextInfo := replyContext(session, req.Record.Content)
 	if len(captionMentioned) > 0 {
