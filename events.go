@@ -99,8 +99,8 @@ func canonicalUser(session *Session, jid, alt types.JID) string {
 // conversationAddressFor is the chat's address: the group JID for groups,
 // the peer's canonical bare number for direct chats — the value of
 // messages.conversation_address. senderAddressFor is the message author —
-// the group participant, or the DM peer — and empty when the account itself
-// spoke (IsFromMe), which is how OpenBSP tells a send from a receipt.
+// the group participant, the DM peer, or the session's own number when the
+// account itself spoke (IsFromMe): we know our address, so we stamp it.
 func conversationAddressFor(session *Session, source types.MessageSource) string {
 	if source.IsGroup {
 		return source.Chat.String()
@@ -113,7 +113,7 @@ func conversationAddressFor(session *Session, source types.MessageSource) string
 
 func senderAddressFor(session *Session, source types.MessageSource) string {
 	if source.IsFromMe {
-		return ""
+		return session.Address
 	}
 	if source.IsGroup {
 		return canonicalUser(session, source.Sender, source.SenderAlt)
