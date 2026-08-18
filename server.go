@@ -357,6 +357,10 @@ func buildOutgoingMessage(
 		switch content.Kind {
 		case "reaction":
 			return buildReaction(session, chat, content)
+		case "edit":
+			return buildEdit(session, chat, content)
+		case "revoke":
+			return buildRevoke(session, chat, content)
 		case "location":
 			var location LocationData
 			if err := json.Unmarshal(content.Data, &location); err != nil {
@@ -616,6 +620,51 @@ func buildReaction(
 	}
 
 	return session.Client.BuildReaction(chat, sender, id, emoji), 0, nil
+}
+
+// buildEdit replaces the text of a message we sent: the referent by id, the new body
+// through the same markdown and mention encoders a fresh send goes through, so an edit
+// reads on the wire exactly like the message it replaces. WhatsApp only honours an edit
+// within EditWindow (20 minutes) — past it the stanza is accepted and ignored, which is
+// the one failure this path cannot report.
+func buildEdit(
+	session *Session, chat types.JID, content MessageContent,
+) (*waE2E.Message, int, error) {
+	id, _, ok := referencedKey(session, content)
+	if !ok {
+		return nil, http.StatusUnprocessableEntity,
+			fmt.Errorf("edit without a valid re_message_id: %s", content.ReMessageID)
+	}
+	if strings.TrimSpace(content.Text) == "" {
+		return nil, http.StatusUnprocessableEntity, fmt.Errorf("edit with empty text")
+	}
+
+	text := markdownToWhatsApp(content.Text)
+	text, mentioned := encodeMentions(session, chat, content, text)
+	newContent := &waE2E.Message{Conversation: proto.String(text)}
+	if len(mentioned) > 0 {
+		newContent = &waE2E.Message{
+			ExtendedTextMessage: &waE2E.ExtendedTextMessage{
+				Text:        proto.String(text),
+				ContextInfo: &waE2E.ContextInfo{MentionedJID: mentioned},
+			},
+		}
+	}
+	return session.Client.BuildEdit(chat, id, newContent), 0, nil
+}
+
+// buildRevoke takes a message back for everyone. referencedKey yields our own JID for a
+// message we sent — which is what whatsmeow wants for the ordinary case; a group admin
+// revoking someone else's passes that participant, and the server decides.
+func buildRevoke(
+	session *Session, chat types.JID, content MessageContent,
+) (*waE2E.Message, int, error) {
+	id, sender, ok := referencedKey(session, content)
+	if !ok {
+		return nil, http.StatusUnprocessableEntity,
+			fmt.Errorf("revoke without a valid re_message_id: %s", content.ReMessageID)
+	}
+	return session.Client.BuildRevoke(chat, sender, id), 0, nil
 }
 
 func dispatchChatJID(req dispatchRequest) (types.JID, error) {

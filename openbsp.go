@@ -101,6 +101,11 @@ type WebhookRevoke struct {
 // text/reaction), FilePart (type "file", Text carries the caption), or
 // DataPart (type "data", kinds location/contacts, payload in Data using the
 // same shapes as the Cloud API service).
+//
+// Outbound, three data kinds act on a message already sent rather than carrying
+// content of their own, each naming its referent in ReMessageID: "reaction"
+// (Data {action, unicode} — a removal is the empty reaction), "edit" (the
+// replacement body in Text) and "revoke".
 type MessageContent struct {
 	Version     string          `json:"version"`
 	Type        string          `json:"type"`
