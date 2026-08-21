@@ -4,9 +4,11 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waAdv"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
@@ -126,5 +128,31 @@ func TestContactNameReadsTheStore(t *testing.T) {
 	}
 	if got := contactName(session, "5490000000000", ""); got != "" {
 		t.Errorf("contactName(unknown, no pushname) = %q, want empty", got)
+	}
+}
+
+// A mute is a deadline: "8 hours" stores a timestamp, "always" the far-future
+// sentinel, an unmute zeroes it — marksOf just asks whether it is still ahead
+// of the message. No settings row at all is an unmarked chat, never an error.
+func TestMarksOfReadsTheDeadline(t *testing.T) {
+	now := time.Date(2026, 8, 20, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		settings types.LocalChatSettings
+		muted    bool
+		archived bool
+	}{
+		{"no row: unmarked", types.LocalChatSettings{}, false, false},
+		{"timed mute still running", types.LocalChatSettings{Found: true, MutedUntil: now.Add(time.Hour)}, true, false},
+		{"timed mute expired", types.LocalChatSettings{Found: true, MutedUntil: now.Add(-time.Hour)}, false, false},
+		{"muted forever", types.LocalChatSettings{Found: true, MutedUntil: store.MutedForever}, true, false},
+		{"unmuted: zero time", types.LocalChatSettings{Found: true}, false, false},
+		{"archived, not muted", types.LocalChatSettings{Found: true, Archived: true}, false, true},
+	}
+	for _, c := range cases {
+		muted, archived := marksOf(c.settings, now)
+		if muted != c.muted || archived != c.archived {
+			t.Errorf("%s: marksOf = (%v, %v), want (%v, %v)", c.name, muted, archived, c.muted, c.archived)
+		}
 	}
 }

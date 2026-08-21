@@ -75,6 +75,14 @@ type WebhookMessage struct {
 	// default); explicit for history/echoes so they stay inert.
 	Status    map[string]any `json:"status,omitempty"`
 	Timestamp string         `json:"timestamp"`
+	// The chat's state when this message arrived, from the phone-synced
+	// settings store (whatsmeow app state — the account's own mute/archive).
+	// Stamped per message, the same denormalization as names: an unmute
+	// reaches messages from the next one on, never retroactively. Live
+	// traffic only — history rides the batch's History flag, which already
+	// silences the whole import.
+	Muted    bool `json:"muted,omitempty"`
+	Archived bool `json:"archived,omitempty"`
 }
 
 type WebhookStatus struct {
@@ -97,6 +105,11 @@ type WebhookEdit struct {
 	SenderAddress       string `json:"sender_address,omitempty"`
 	Text                string `json:"text"`
 	Timestamp           string `json:"timestamp"`
+	// The chat's state on arrival (see WebhookMessage) — an edit is its own
+	// event, so it carries the state too: else an edit in a muted chat would
+	// wake what the chat cannot.
+	Muted    bool `json:"muted,omitempty"`
+	Archived bool `json:"archived,omitempty"`
 }
 
 type WebhookRevoke struct {

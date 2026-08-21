@@ -169,6 +169,31 @@ func contactName(session *Session, user, live string) string {
 	return pickName(contact, live)
 }
 
+// marksOf reads a chat's mute/archive off the settings whatsmeow's app state
+// sync keeps phone-synced. Muted is a deadline, not a flag: "8 hours" stores a
+// timestamp, "always" stores the far-future sentinel, an unmute zeroes it — so
+// the question is simply whether the deadline is still ahead of this message.
+func marksOf(settings types.LocalChatSettings, now time.Time) (muted, archived bool) {
+	if !settings.Found {
+		return false, false
+	}
+	return settings.MutedUntil.After(now), settings.Archived
+}
+
+// chatMarks is marksOf against the session's settings store. A miss is an
+// unmarked chat, never an error: most chats have no settings row at all.
+func chatMarks(session *Session, chat types.JID, now time.Time) (muted, archived bool) {
+	store := session.Client.Store.ChatSettings
+	if store == nil {
+		return false, false
+	}
+	settings, err := store.GetChatSettings(context.Background(), chat)
+	if err != nil {
+		return false, false
+	}
+	return marksOf(settings, now)
+}
+
 // mediaKinds maps a detected media message to the FilePart metadata OpenBSP
 // expects; the actual bytes are resolved separately via DownloadAny.
 type inboundMedia struct {
@@ -476,6 +501,7 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 			m.log.Debugf("Unsupported edit content on %s", original)
 			return
 		}
+		muted, archived := chatMarks(session, evt.Info.Chat, evt.Info.Timestamp)
 		batch.Edits = append(batch.Edits, WebhookEdit{
 			ExternalID:          ownID,
 			OriginalMessageID:   original,
@@ -483,6 +509,8 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 			SenderAddress:       sender,
 			Text:                whatsappToMarkdown(text),
 			Timestamp:           timestamp,
+			Muted:               muted,
+			Archived:            archived,
 		})
 	default:
 		return
@@ -537,6 +565,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		}
 	}
 
+	muted, archived := chatMarks(session, chat, evt.Info.Timestamp)
 	message := WebhookMessage{
 		ExternalID: externalID(
 			session.Address, chatSegment(session, evt.Info.MessageSource),
@@ -546,6 +575,8 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		SenderAddress:       senderAddressFor(session, evt.Info.MessageSource),
 		Content:             *content,
 		Timestamp:           evt.Info.Timestamp.Format(time.RFC3339),
+		Muted:               muted,
+		Archived:            archived,
 	}
 	// The event's pushname is the AUTHOR's, so it only speaks for the author:
 	// on an echo it is our own name, and lending it to the peer would name the
