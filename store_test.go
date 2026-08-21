@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/proto/waAdv"
+	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 )
 
@@ -78,5 +81,50 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 		t.Fatalf("GetMapping after delete: %v", err)
 	} else if got != nil {
 		t.Fatalf("GetMapping after delete = %+v, want nil", got)
+	}
+}
+
+// The lookup behind every message's sender_name/conversation_name: a real
+// whatsmeow store, a real contact row, and the JID built from the canonical
+// digits the webhook carries. Worth proving against the database rather than
+// reasoning about, because a lookup that silently misses looks exactly like a
+// contact nobody has named — the message still ships, just anonymous.
+func TestContactNameReadsTheStore(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenStore(ctx, "file:"+filepath.Join(t.TempDir(), "bridge.db"), waLog.Noop)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer st.DB.Close()
+
+	device := st.Container.NewDevice()
+	own := types.JID{User: "5491100000000", Device: 17, Server: types.DefaultUserServer}
+	device.ID = &own
+	// PutDevice writes the pairing blobs; a test device only needs them non-null
+	device.Account = &waAdv.ADVSignedDeviceIdentity{
+		Details:             []byte{0x01},
+		AccountSignature:    make([]byte, 64),
+		AccountSignatureKey: make([]byte, 32),
+		DeviceSignature:     make([]byte, 64),
+	}
+	if err := st.Container.PutDevice(ctx, device); err != nil {
+		t.Fatalf("PutDevice: %v", err)
+	}
+	peer := types.NewJID("15613518605", types.DefaultUserServer)
+	if err := device.Contacts.PutContactName(ctx, peer, "Gianvito Sobisch", ""); err != nil {
+		t.Fatalf("PutContactName: %v", err)
+	}
+
+	session := &Session{Client: whatsmeow.NewClient(device, waLog.Noop), Address: own.User}
+	if got := contactName(session, peer.User, "gv"); got != "Gianvito Sobisch" {
+		t.Errorf("contactName = %q, want the address-book name", got)
+	}
+	// nobody by that number: the live pushname is all there is, and a total
+	// miss must stay empty so the consumer falls back to the address
+	if got := contactName(session, "5490000000000", "sol tru"); got != "sol tru" {
+		t.Errorf("contactName(unknown) = %q, want the live pushname", got)
+	}
+	if got := contactName(session, "5490000000000", ""); got != "" {
+		t.Errorf("contactName(unknown, no pushname) = %q, want empty", got)
 	}
 }

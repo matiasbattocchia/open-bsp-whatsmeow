@@ -57,3 +57,47 @@ func TestEditRefusesEmptyText(t *testing.T) {
 		t.Fatalf("expected 422 for an empty edit, got status %d err %v", status, err)
 	}
 }
+
+// Who a contact IS, in the order the account would answer: the name it wrote in
+// its own address book beats what the contact calls itself, and the live event's
+// pushname beats the stored copy of the same fact.
+func TestPickNamePrefersTheAddressBook(t *testing.T) {
+	cases := []struct {
+		name    string
+		contact types.ContactInfo
+		live    string
+		want    string
+	}{
+		{"address book wins", types.ContactInfo{FullName: "Gianvito", PushName: "gv 🇮🇹"}, "gv 🇮🇹", "Gianvito"},
+		{"first name when that is all there is", types.ContactInfo{FirstName: "Ana", PushName: "any"}, "", "Ana"},
+		{"live pushname beats the stored one", types.ContactInfo{PushName: "old"}, "new", "new"},
+		{"business name is the last resort", types.ContactInfo{BusinessName: "Ferretería"}, "", "Ferretería"},
+		{"blank is blank — the consumer falls back to the address", types.ContactInfo{}, "   ", ""},
+	}
+	for _, c := range cases {
+		if got := pickName(c.contact, c.live); got != c.want {
+			t.Errorf("%s: pickName = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// Every id the bridge mints names the chat in ONE namespace — the canonical one the
+// consumer stores. A LID-addressed chat speaks lids on the wire, and an id built from the
+// lid matches nothing the other side wrote: our own sends address the peer by number, so
+// a reply-to, a reaction and a receipt all pointed at a chat that did not exist there.
+func TestChatSegmentIsCanonicalInBothNamespaces(t *testing.T) {
+	session := &Session{Address: "5491100000000"}
+	phone := types.NewJID("5491199999999", types.DefaultUserServer)
+	lid := types.NewJID("168723612700722", types.HiddenUserServer)
+
+	byPhone := chatSegment(session, types.MessageSource{Chat: phone})
+	byLID := chatSegment(session, types.MessageSource{Chat: lid, SenderAlt: phone})
+	if byPhone != "5491199999999" || byLID != byPhone {
+		t.Fatalf("chat segment: phone %q, lid %q — want both %q", byPhone, byLID, "5491199999999")
+	}
+	// a group is already its own namespace: the JID user, untouched
+	group := types.NewJID("120363429869958481", types.GroupServer)
+	if got := chatSegment(session, types.MessageSource{Chat: group, IsGroup: true}); got != group.User {
+		t.Errorf("group chat segment = %q, want %q", got, group.User)
+	}
+}

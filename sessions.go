@@ -33,6 +33,11 @@ type Session struct {
 	groupsMu   sync.Mutex
 	groupsSent map[string]struct{}
 
+	// A group's subject, kept once GetGroupInfo answers, so every later
+	// message can carry conversation_name without another round-trip.
+	namesMu    sync.Mutex
+	groupNames map[string]string
+
 	// A group's addressing mode (phone-number or LID), learned from inbound
 	// traffic and from GetGroupInfo, and kept for the process lifetime: it
 	// decides which namespace an outbound mention must speak.
@@ -73,6 +78,26 @@ func (s *Session) markGroupSent(address string) bool {
 	}
 	s.groupsSent[address] = struct{}{}
 	return true
+}
+
+// noteGroupName records a group's subject; groupName reports it, "" when this
+// process has never fetched it.
+func (s *Session) noteGroupName(address, name string) {
+	if address == "" || name == "" {
+		return
+	}
+	s.namesMu.Lock()
+	defer s.namesMu.Unlock()
+	if s.groupNames == nil {
+		s.groupNames = make(map[string]string)
+	}
+	s.groupNames[address] = name
+}
+
+func (s *Session) groupName(address string) string {
+	s.namesMu.Lock()
+	defer s.namesMu.Unlock()
+	return s.groupNames[address]
 }
 
 // Manager owns all sessions of this bridge instance. One replica by design:

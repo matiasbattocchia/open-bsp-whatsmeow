@@ -59,8 +59,18 @@ type WebhookMessage struct {
 	// The contact who authored the message (group participant, or the DM
 	// peer). Empty when the account itself spoke (echoes, history) — the
 	// authorship marker OpenBSP branches on.
-	SenderAddress string         `json:"sender_address,omitempty"`
-	Content       MessageContent `json:"content"`
+	SenderAddress string `json:"sender_address,omitempty"`
+	// Who the addresses are, denormalized onto every message: SenderName is
+	// what this account calls the author (address book first, pushname
+	// otherwise), ConversationName the group's subject or — for a direct
+	// chat — the peer's name. Both empty when nobody has ever named them,
+	// and both absent for the account's own messages, which need no name.
+	// A consumer keeping its own contact entity (the contacts/groups feeds
+	// below) can ignore these; one without a directory needs them, since
+	// the pushname is otherwise knowable only while the sender is speaking.
+	SenderName       string         `json:"sender_name,omitempty"`
+	ConversationName string         `json:"conversation_name,omitempty"`
+	Content          MessageContent `json:"content"`
 	// Omitted for live messages (arms OpenBSP automation via the pending
 	// default); explicit for history/echoes so they stay inert.
 	Status    map[string]any `json:"status,omitempty"`

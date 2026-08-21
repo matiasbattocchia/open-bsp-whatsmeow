@@ -99,19 +99,33 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			if content.ReMessageID == "" {
 				if stanza, participant := quotedRef(parsed.Message); stanza != "" {
 					content.ReMessageID = externalID(
-						session.Address, chat.User,
+						session.Address, chatSegment(session, parsed.Info.MessageSource),
 						keySender(session, chat, false, participant), stanza,
 					)
 				}
 			}
 
 			message := WebhookMessage{
-				ExternalID:          externalID(session.Address, chat.User, senderSegment, parsed.Info.ID),
+				ExternalID: externalID(
+					session.Address, chatSegment(session, parsed.Info.MessageSource),
+					senderSegment, parsed.Info.ID,
+				),
 				ConversationAddress: conversationAddressFor(session, parsed.Info.MessageSource),
 				SenderAddress:       senderAddressFor(session, parsed.Info.MessageSource),
 				Content:             *content,
 				Status:              historyStatus(webMsg, parsed),
 				Timestamp:           parsed.Info.Timestamp.Format(time.RFC3339),
+			}
+			// The import carries names too — the contact store is already
+			// synced when history arrives, and a year of rows that name
+			// nobody is a year the consumer can only search by number.
+			if !parsed.Info.IsFromMe {
+				message.SenderName = contactName(session, message.SenderAddress, parsed.Info.PushName)
+			}
+			if !parsed.Info.IsGroup {
+				message.ConversationName = contactName(session, message.ConversationAddress, "")
+			} else if name := conversation.GetName(); name != "" {
+				message.ConversationName = name
 			}
 
 			pending.Messages = append(pending.Messages, message)

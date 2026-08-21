@@ -111,6 +111,22 @@ func conversationAddressFor(session *Session, source types.MessageSource) string
 	return canonicalUser(session, source.Chat, source.SenderAlt)
 }
 
+// chatSegment is the CHAT half of an external id, in the same canonical namespace as
+// conversationAddressFor (bare, since ids carry users not JIDs). A LID-addressed chat
+// speaks lids on the wire, and an id minted from one matches nothing the consumer stored
+// from the other side: our own sends address the peer by phone number, so a reply-to, a
+// reaction and a receipt all came back naming a chat that did not exist here (live,
+// 2026-08-18 — the quoted approval that answered nothing).
+func chatSegment(session *Session, source types.MessageSource) string {
+	if source.IsGroup {
+		return source.Chat.User
+	}
+	if source.IsFromMe {
+		return canonicalUser(session, source.Chat, source.RecipientAlt)
+	}
+	return canonicalUser(session, source.Chat, source.SenderAlt)
+}
+
 func senderAddressFor(session *Session, source types.MessageSource) string {
 	if source.IsFromMe {
 		return session.Address
@@ -119,6 +135,38 @@ func senderAddressFor(session *Session, source types.MessageSource) string {
 		return canonicalUser(session, source.Sender, source.SenderAlt)
 	}
 	return canonicalUser(session, source.Chat, source.SenderAlt)
+}
+
+// pickName chooses what to call somebody, address book first: FullName and
+// FirstName are what the ACCOUNT named this contact, PushName only what the
+// contact calls itself, and BusinessName the storefront it trades under. The
+// live event's own pushname (`live`) beats the stored one — same fact, fresher
+// — but never the account's own naming.
+func pickName(contact types.ContactInfo, live string) string {
+	for _, candidate := range []string{
+		contact.FullName, contact.FirstName, live, contact.PushName, contact.BusinessName,
+	} {
+		if name := strings.TrimSpace(candidate); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// contactName is pickName over the contact store, keyed by canonical digits.
+// A miss is not an error: plenty of numbers are in no address book, and the
+// consumer's fallback is the address itself.
+func contactName(session *Session, user, live string) string {
+	if user == "" {
+		return strings.TrimSpace(live)
+	}
+	contact, err := session.Client.Store.Contacts.GetContact(
+		context.Background(), types.NewJID(user, types.DefaultUserServer),
+	)
+	if err != nil {
+		return strings.TrimSpace(live)
+	}
+	return pickName(contact, live)
 }
 
 // mediaKinds maps a detected media message to the FilePart metadata OpenBSP
@@ -308,7 +356,7 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 			Kind:    "reaction",
 			Data:    payload,
 			ReMessageID: externalID(
-				session.Address, evt.Info.Chat.User,
+				session.Address, chatSegment(session, evt.Info.MessageSource),
 				keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
 				key.GetID(),
 			),
@@ -382,7 +430,7 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 	batch := WebhookBatch{OrganizationAddress: session.Address}
 	key := pm.GetKey()
 	original := externalID(
-		session.Address, evt.Info.Chat.User,
+		session.Address, chatSegment(session, evt.Info.MessageSource),
 		keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
 		key.GetID(),
 	)
@@ -394,7 +442,9 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 	if !evt.Info.IsFromMe {
 		ownSegment = canonicalUser(session, evt.Info.Sender, evt.Info.SenderAlt)
 	}
-	ownID := externalID(session.Address, evt.Info.Chat.User, ownSegment, evt.Info.ID)
+	ownID := externalID(
+		session.Address, chatSegment(session, evt.Info.MessageSource), ownSegment, evt.Info.ID,
+	)
 	conversation := conversationAddressFor(session, evt.Info.MessageSource)
 	sender := senderAddressFor(session, evt.Info.MessageSource)
 
@@ -481,18 +531,36 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	if content.ReMessageID == "" {
 		if stanza, participant := quotedRef(evt.Message); stanza != "" {
 			content.ReMessageID = externalID(
-				session.Address, chat.User,
+				session.Address, chatSegment(session, evt.Info.MessageSource),
 				keySender(session, chat, false, participant), stanza,
 			)
 		}
 	}
 
 	message := WebhookMessage{
-		ExternalID:          externalID(session.Address, chat.User, senderSegment, evt.Info.ID),
+		ExternalID: externalID(
+			session.Address, chatSegment(session, evt.Info.MessageSource),
+			senderSegment, evt.Info.ID,
+		),
 		ConversationAddress: conversationAddressFor(session, evt.Info.MessageSource),
 		SenderAddress:       senderAddressFor(session, evt.Info.MessageSource),
 		Content:             *content,
 		Timestamp:           evt.Info.Timestamp.Format(time.RFC3339),
+	}
+	// The event's pushname is the AUTHOR's, so it only speaks for the author:
+	// on an echo it is our own name, and lending it to the peer would name the
+	// chat after ourselves.
+	live := ""
+	if !evt.Info.IsFromMe {
+		live = evt.Info.PushName
+		message.SenderName = contactName(session, message.SenderAddress, live)
+	}
+	if evt.Info.IsGroup {
+		message.ConversationName = session.groupName(chat.String())
+	} else {
+		// A direct chat IS its peer, so the peer's name names the room — the
+		// only name a DM will ever have (WhatsApp has no subject for one).
+		message.ConversationName = contactName(session, message.ConversationAddress, live)
 	}
 
 	if mediaErr != nil {
@@ -518,6 +586,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 					m.log.Warnf("GetGroupInfo %s failed: %v", chat, err)
 					return
 				}
+				session.noteGroupName(chat.String(), info.Name)
 				if err := m.openbsp.PostBatch(WebhookBatch{
 					OrganizationAddress: session.Address,
 					Groups: []WebhookGroup{
@@ -606,7 +675,7 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 
 	for _, id := range evt.MessageIDs {
 		status := WebhookStatus{
-			ExternalID:          externalID(session.Address, evt.Chat.User, author, id),
+			ExternalID:          externalID(session.Address, chatSegment(session, evt.MessageSource), author, id),
 			ConversationAddress: conversationAddressFor(session, evt.MessageSource),
 			Status:              map[string]any{key: value},
 		}
