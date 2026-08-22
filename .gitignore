@@ -1,3 +1,7 @@
 /bridge
+bridge.prev
+/open-bsp-whatsmeow
 *.db
+*.db-shm
+*.db-wal
 .env
