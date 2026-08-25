@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"runtime/debug"
 	"sort"
 	"strings"
@@ -102,7 +103,10 @@ type dispatchRequest struct {
 		Content             MessageContent `json:"content"`
 		Status              map[string]any `json:"status"`
 	} `json:"record"`
-	// Signed download URL for content.file.uri (media TODO).
+	// Where the bytes are fetched from for a file part: a signed download URL
+	// for content.file.uri. May be RELATIVE ("/m/<signed>"), in which case it
+	// resolves against OPENBSP_URL — the consumer's own address, the one this
+	// bridge already delivers to, so it never has to state its host to us.
 	MediaURL string `json:"media_url"`
 }
 
@@ -114,6 +118,15 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	if req.MediaURL != "" {
+		resolved, err := resolveMediaURL(s.cfg.OpenBSPURL, req.MediaURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		req.MediaURL = resolved
 	}
 
 	session := s.manager.Get(req.Record.OrganizationAddress)
@@ -455,6 +468,25 @@ var kindToMediaType = map[string]whatsmeow.MediaType{
 	"audio":    whatsmeow.MediaAudio,
 	"video":    whatsmeow.MediaVideo,
 	"document": whatsmeow.MediaDocument,
+}
+
+// resolveMediaURL makes a media_url absolute. An absolute one is taken as it
+// stands (open-bsp-api sends signed storage links); a relative one is resolved
+// against the OpenBSP base, which is where this bridge already posts webhooks —
+// so a consumer serving its own media needs no configured hostname of its own.
+func resolveMediaURL(base, media string) (string, error) {
+	ref, err := url.Parse(media)
+	if err != nil {
+		return "", fmt.Errorf("media_url: %w", err)
+	}
+	if ref.IsAbs() {
+		return media, nil
+	}
+	b, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("OPENBSP_URL: %w", err)
+	}
+	return b.ResolveReference(ref).String(), nil
 }
 
 // buildMediaMessage turns an outgoing FilePart into a WhatsApp media
