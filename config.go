@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Config is read once from the environment; the bridge is stateless and
@@ -26,6 +27,12 @@ type Config struct {
 	BridgeToken string
 	// HTTP listen address for dispatcher/management calls.
 	ListenAddr string
+	// Report a paired session's link state to the management function:
+	// `disconnected` when its socket drops, `connected` when whatsmeow has it
+	// back (the pair brackets the outage). Off ⇒ only the pairing
+	// `connected` and `logged_out` are posted, which is all OpenBSP's
+	// management function accepts.
+	LinkEvents bool
 }
 
 func ConfigFromEnv() (*Config, error) {
@@ -44,6 +51,13 @@ func ConfigFromEnv() (*Config, error) {
 	}
 	if cfg.BridgeToken == "" {
 		return nil, fmt.Errorf("BRIDGE_TOKEN is required")
+	}
+	if raw := os.Getenv("LINK_EVENTS"); raw != "" {
+		on, err := strconv.ParseBool(raw)
+		if err != nil {
+			return nil, fmt.Errorf("LINK_EVENTS: %w", err)
+		}
+		cfg.LinkEvents = on
 	}
 	if cfg.ListenAddr == "" {
 		// PaaS convention (Zeabur/Heroku/...): the platform announces the

@@ -19,13 +19,16 @@ type OpenBSP struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// The receiver takes link-state events (Config.LinkEvents).
+	LinkEvents bool
 }
 
 func NewOpenBSP(cfg *Config) *OpenBSP {
 	return &OpenBSP{
-		baseURL: cfg.OpenBSPURL,
-		token:   cfg.BridgeToken,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		baseURL:    cfg.OpenBSPURL,
+		token:      cfg.BridgeToken,
+		http:       &http.Client{Timeout: 30 * time.Second},
+		LinkEvents: cfg.LinkEvents,
 	}
 }
 
@@ -280,9 +283,11 @@ func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (st
 }
 
 // SessionEvent notifies whatsapp-web-management of a lifecycle change; the
-// management function owns all onboarding-related DB writes.
+// management function owns all onboarding-related DB writes. `connected` is
+// posted on pairing and, with LinkEvents, on every reconnect; `disconnected`
+// only with LinkEvents.
 type SessionEvent struct {
-	Event          string `json:"event"` // connected | logged_out
+	Event          string `json:"event"` // connected | disconnected | logged_out
 	OrganizationID string `json:"organization_id"`
 	Address        string `json:"address"`
 	// Empty for the org's shared inbox; set for a personal session.

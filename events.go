@@ -25,11 +25,20 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 		}
 
 	case *events.Connected:
-		if session.Address == "" && session.Client.Store.ID != nil {
+		if session.Address != "" {
+			m.postLinkState(session, "connected")
+		} else if session.Client.Store.ID != nil {
 			m.completePairing(session, *session.Client.Store.ID)
 		}
 
 	case *events.Disconnected:
+		// Fires only on an unexpected drop — whatsmeow reconnects by itself
+		// and a logout expects its own disconnect, so a paired session's
+		// `disconnected` is always answered by a `connected`.
+		if session.Address != "" {
+			m.postLinkState(session, "disconnected")
+			return
+		}
 		// A pairing socket that drops is DEAD, not slow: WhatsApp ends the
 		// stream ~3 minutes after issuing a phone code, and the code dies with
 		// it. Fail the pending session now — otherwise the poll keeps

@@ -417,6 +417,23 @@ func (m *Manager) completePairing(session *Session, ownJID types.JID) {
 	}
 }
 
+// postLinkState reports a paired session's socket coming or going, when the
+// receiver takes such events (OpenBSP.LinkEvents).
+func (m *Manager) postLinkState(session *Session, state string) {
+	if !m.openbsp.LinkEvents {
+		return
+	}
+	m.log.Infof("Session %s %s", session.Address, state)
+	if err := m.openbsp.PostSessionEvent(SessionEvent{
+		Event:          state,
+		OrganizationID: session.OrganizationID,
+		Address:        session.Address,
+		AgentID:        session.AgentID,
+	}); err != nil {
+		m.log.Errorf("Notify %s for %s failed: %v", state, session.Address, err)
+	}
+}
+
 // SessionStatus is what whatsapp-web-management's GET route relays to the UI.
 type SessionStatus struct {
 	Address   string `json:"address"`

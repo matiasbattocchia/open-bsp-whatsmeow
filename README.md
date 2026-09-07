@@ -42,6 +42,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 | `BRIDGE_TOKEN`  | yes      | Shared bearer token (must match `WHATSAPP_WEB_TOKEN` in OpenBSP) |
 | `LISTEN_ADDR`   | no       | Default `:$PORT` (PaaS convention) or `:8081`            |
 | `LOG_LEVEL`     | no       | Default `INFO`                                           |
+| `LINK_EVENTS`   | no       | `true` also posts a paired session's link state to the management function: `disconnected` when its socket drops, `connected` when whatsmeow has it back. Default `false` — OpenBSP's management function accepts only the pairing `connected` and `logged_out` |
 
 OpenBSP side (`supabase/functions/.env`): set `WHATSAPP_WEB_URL` to this
 service's base URL and `WHATSAPP_WEB_TOKEN` to the same token.
@@ -104,7 +105,8 @@ Working end to end:
   (`MarkRead`, `SendChatPresence`)
 - Contact pushnames
 - QR + phone-code pairing with rotation polling, logout, session-death
-  (`logged_out`) notification to management
+  (`logged_out`) notification to management; link state (`disconnected` /
+  `connected`) too, with `LINK_EVENTS`
 
 Parity notes vs the `whatsapp` (Cloud API) service:
 
