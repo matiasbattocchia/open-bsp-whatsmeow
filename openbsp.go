@@ -179,9 +179,12 @@ type ContactData struct {
 	} `json:"phones,omitempty"`
 }
 
+// FilePayload describes a medium. A FilePart always carries a URI; a
+// media_placeholder carries the same struct with the URI omitted, which is
+// the whole of what it is saying.
 type FilePayload struct {
 	MimeType string `json:"mime_type"`
-	URI      string `json:"uri"`
+	URI      string `json:"uri,omitempty"`
 	Name     string `json:"name,omitempty"`
 	Size     int64  `json:"size,omitempty"`
 }

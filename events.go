@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -343,13 +344,16 @@ func dataPart(kind string, data any) (*MessageContent, error) {
 	return &MessageContent{Version: "1", Type: "data", Kind: kind, Data: payload}, nil
 }
 
-// buildContent extracts a v1 content Part from the event. When
-// downloadMedia is set, media is downloaded+decrypted (DownloadAny) and
-// stored via the webhook's /media route; on failure the FilePart is
-// preserved without a URI and mediaErr is returned so the message can carry
-// an error status instead of silently dropping (mirrors whatsapp-webhook's
-// oversized-media path). History import passes downloadMedia=false: old
-// media is frequently gone from the CDN, so only the metadata is kept.
+// errMediaNotImported is why a history row carries a placeholder: not a
+// failure to report to the org as one, but the import's standing policy.
+var errMediaNotImported = errors.New(
+	"media not imported: history sync does not fetch media",
+)
+
+// buildContent extracts a v1 content Part from the event. A media message
+// becomes a FilePart only when downloadMedia is set AND the bytes reach
+// storage; every other path returns a media_placeholder and the reason in
+// mediaErr, for the caller to put in the message's status.
 func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMedia bool) (content *MessageContent, mediaErr error) {
 	text := evt.Message.GetConversation()
 	if text == "" {
@@ -428,32 +432,55 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 	captionText, captionMentions := mentionsIn(
 		session, evt.Message, whatsappToMarkdown(media.caption),
 	)
-	content = &MessageContent{
+	// A FilePart is a promise of bytes, and a consumer takes it as one: it
+	// renders an attachment and offers to open it. With no URI to open there
+	// is nothing to render, so an unstored medium is a media_placeholder
+	// instead — what the Cloud API sends when it cannot hand the media over,
+	// so consumers already know the shape.
+	//
+	// Data stays empty, as the Cloud API leaves it; what whatsmeow knows that
+	// the Cloud API does not — the type and name of the medium — rides in
+	// File, minus the URI. The caption survives either way; it is the part
+	// the peer actually wrote.
+	placeholder := &MessageContent{
 		Version:  "1",
-		Type:     "file",
-		Kind:     media.kind,
+		Type:     "data",
+		Kind:     "media_placeholder",
 		Text:     captionText,
+		Data:     json.RawMessage("{}"),
 		File:     &FilePayload{MimeType: media.mime, Name: media.name},
 		Mentions: captionMentions,
 	}
 
+	// Media in history is usually already gone from the CDN, and re-fetching
+	// a year of it would spend the org's whole storage quota on one sweep.
 	if !downloadMedia {
-		return content, nil
+		return placeholder, errMediaNotImported
 	}
 
 	data, err := session.Client.DownloadAny(context.Background(), evt.Message)
 	if err != nil {
-		return content, fmt.Errorf("download media: %w", err)
+		return placeholder, fmt.Errorf("download media: %w", err)
 	}
 
 	uri, err := m.openbsp.UploadMedia(session.Address, media.name, data)
 	if err != nil {
-		return content, fmt.Errorf("store media: %w", err)
+		return placeholder, fmt.Errorf("store media: %w", err)
 	}
 
-	content.File.URI = uri
-	content.File.Size = int64(len(data))
-	return content, nil
+	return &MessageContent{
+		Version: "1",
+		Type:    "file",
+		Kind:    media.kind,
+		Text:    captionText,
+		File: &FilePayload{
+			MimeType: media.mime,
+			Name:     media.name,
+			URI:      uri,
+			Size:     int64(len(data)),
+		},
+		Mentions: captionMentions,
+	}, nil
 }
 
 // handleProtocolMessage translates edits and revokes into the webhook's

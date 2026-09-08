@@ -85,7 +85,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 				continue
 			}
 
-			content, _ := m.buildContent(session, parsed, false)
+			content, mediaErr := m.buildContent(session, parsed, false)
 			if content == nil {
 				skipped++
 				continue
@@ -113,7 +113,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 				ConversationAddress: conversationAddressFor(session, parsed.Info.MessageSource),
 				SenderAddress:       senderAddressFor(session, parsed.Info.MessageSource),
 				Content:             *content,
-				Status:              historyStatus(webMsg, parsed),
+				Status:              historyStatus(webMsg, parsed, mediaErr),
 				Timestamp:           parsed.Info.Timestamp.Format(time.RFC3339),
 			}
 			// The import carries names too — the contact store is already
@@ -143,8 +143,21 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 
 // historyStatus maps a history message to its explicit final status.
 // Incoming history is stamped read (it predates the pairing); outgoing
-// follows the ack recorded by the phone.
-func historyStatus(webMsg *waWeb.WebMessageInfo, parsed *events.Message) map[string]any {
+// follows the ack recorded by the phone. A mediaErr rides along so a
+// placeholder row says why it holds no file.
+func historyStatus(
+	webMsg *waWeb.WebMessageInfo, parsed *events.Message, mediaErr error,
+) map[string]any {
+	status := deliveryStatus(webMsg, parsed)
+	if mediaErr != nil {
+		status["errors"] = []string{mediaErr.Error()}
+	}
+	return status
+}
+
+func deliveryStatus(
+	webMsg *waWeb.WebMessageInfo, parsed *events.Message,
+) map[string]any {
 	timestamp := parsed.Info.Timestamp.Format(time.RFC3339)
 
 	if !parsed.Info.IsFromMe {
