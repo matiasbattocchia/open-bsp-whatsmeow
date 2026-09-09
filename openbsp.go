@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -19,6 +20,10 @@ type OpenBSP struct {
 	baseURL string
 	token   string
 	http    *http.Client
+	// Media uploads are sized in megabytes where the calls above are sized in
+	// kilobytes, so they get their own client and a deadline per request
+	// instead of one flat Timeout that has to suit both.
+	mediaHTTP *http.Client
 	// The receiver takes link-state events (Config.LinkEvents).
 	LinkEvents bool
 }
@@ -28,8 +33,29 @@ func NewOpenBSP(cfg *Config) *OpenBSP {
 		baseURL:    cfg.OpenBSPURL,
 		token:      cfg.BridgeToken,
 		http:       &http.Client{Timeout: 30 * time.Second},
+		mediaHTTP:  &http.Client{},
 		LinkEvents: cfg.LinkEvents,
 	}
+}
+
+// How long to wait for an upload of size bytes. whatsmeow calls event
+// handlers synchronously, so this deadline is also how long one medium can
+// hold up the rest of the session's events — hence a budget that grows with
+// the payload rather than a flat ceiling sized for the worst case. The floor
+// covers a cold start of the edge function; the cap bounds the stall for a
+// 50 MB upload (MAX_STORAGE_UPLOAD_SIZE) on a slow link.
+func mediaUploadTimeout(size int) time.Duration {
+	const (
+		floor   = 30 * time.Second
+		perMB   = 10 * time.Second
+		ceiling = 5 * time.Minute
+	)
+
+	budget := floor + time.Duration(size/(1000*1000))*perMB
+	if budget > ceiling {
+		return ceiling
+	}
+	return budget
 }
 
 // WebhookBatch mirrors the connector webhook contract (see
@@ -250,8 +276,13 @@ func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (st
 		return "", err
 	}
 
-	req, err := http.NewRequest(
-		http.MethodPost, o.baseURL+"/whatsapp-web-webhook/media", &body,
+	ctx, cancel := context.WithTimeout(
+		context.Background(), mediaUploadTimeout(len(data)),
+	)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(
+		ctx, http.MethodPost, o.baseURL+"/whatsapp-web-webhook/media", &body,
 	)
 	if err != nil {
 		return "", err
@@ -259,7 +290,7 @@ func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (st
 	req.Header.Set("Authorization", "Bearer "+o.token)
 	req.Header.Set("Content-Type", form.FormDataContentType())
 
-	resp, err := o.http.Do(req)
+	resp, err := o.mediaHTTP.Do(req)
 	if err != nil {
 		return "", err
 	}
