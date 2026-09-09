@@ -65,7 +65,9 @@ func ConfigFromEnv() (*Config, error) {
 		if port := os.Getenv("PORT"); port != "" {
 			cfg.ListenAddr = ":" + port
 		} else {
-			cfg.ListenAddr = ":8081"
+			// local default: loopback only — the bearer token authenticates callers,
+			// it does not do LAN-perimeter duty. LISTEN_ADDR widens deliberately.
+			cfg.ListenAddr = "127.0.0.1:8081"
 		}
 	}
 
