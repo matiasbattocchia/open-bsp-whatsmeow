@@ -155,7 +155,63 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 	}
 
+	go m.watchForResume()
 	return nil
+}
+
+// SLEEP_TICK is how often the host is asked whether it has been asleep, and SLEEP_GAP how
+// far the wall clock must have run past it before the answer is yes. Generous enough that
+// a slow tick is never mistaken for a suspend, short enough that a laptop opened at a red
+// light is back before the person looks.
+const (
+	SLEEP_TICK = 10 * time.Second
+	SLEEP_GAP  = 30 * time.Second
+)
+
+// hostSlept answers whether the wall clock ran further between two ticks than the tick
+// itself can explain. Both times must carry no monotonic reading (see watchForResume).
+func hostSlept(last, now time.Time) bool {
+	return now.Sub(last) >= SLEEP_TICK+SLEEP_GAP
+}
+
+// watchForResume brings every session's socket back the moment the host wakes. A suspend
+// leaves TCP connections that accept writes and never answer, and whatsmeow waits three
+// minutes of failed keepalives before dialling again — measured on the monotonic clock,
+// which does not advance while the host sleeps, so those three minutes start at RESUME.
+// The account is deaf for all of them, and WhatsApp holds everything sent meanwhile in
+// its offline queue. A tick that returns far later on the wall clock than it was due is
+// the host waking: the sockets from before the sleep are already dead, so dial now.
+func (m *Manager) watchForResume() {
+	// Round(0) strips the monotonic reading — with it, Sub answers in monotonic time and
+	// a suspend is invisible by construction, which is the very thing being measured.
+	last := time.Now().Round(0)
+	for {
+		time.Sleep(SLEEP_TICK)
+		now := time.Now().Round(0)
+		slept := now.Sub(last)
+		woke := hostSlept(last, now)
+		last = now
+		if !woke {
+			continue
+		}
+		m.mu.RLock()
+		sessions := make([]*Session, 0, len(m.sessions))
+		for _, s := range m.sessions {
+			sessions = append(sessions, s)
+		}
+		m.mu.RUnlock()
+
+		m.log.Infof("Host slept ~%s — redialling %d session(s)", slept.Round(time.Second), len(sessions))
+		for _, session := range sessions {
+			if session.Address == "" {
+				continue // still pairing: its socket is the pairing one, and dying is its signal
+			}
+			session.Client.Disconnect()
+			if err := session.Client.Connect(); err != nil {
+				m.log.Errorf("Redial %s after sleep failed: %v", session.Address, err)
+			}
+		}
+	}
 }
 
 func (m *Manager) register(device *store.Device, organizationID, address, agentID string) *Session {

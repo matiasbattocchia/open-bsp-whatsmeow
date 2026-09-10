@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -132,5 +133,23 @@ func TestEditBodyRefusesUnreadableContent(t *testing.T) {
 	session := &Session{Address: "5491100000000"}
 	if _, _, ok := editBody(session, &waE2E.Message{}); ok {
 		t.Fatalf("an edit with no readable text must not publish")
+	}
+}
+
+// A suspended host is one whose wall clock ran on while its timers did not. The tick
+// itself accounts for some of the gap; anything well past it is sleep, and the sockets
+// from before it are dead whether or not they say so.
+func TestHostSleptReadsTheWallClockGap(t *testing.T) {
+	base := time.Date(2026, 9, 10, 12, 46, 49, 0, time.UTC)
+
+	if hostSlept(base, base.Add(SLEEP_TICK)) {
+		t.Fatalf("a tick that lands on time is not a sleep")
+	}
+	if hostSlept(base, base.Add(SLEEP_TICK+SLEEP_GAP-time.Second)) {
+		t.Fatalf("a late tick inside the margin is not a sleep")
+	}
+	// the real one: 45 minutes on the lid, 2026-09-10
+	if !hostSlept(base, base.Add(45*time.Minute)) {
+		t.Fatalf("45 minutes of wall clock with no ticks is a sleep")
 	}
 }
