@@ -483,6 +483,100 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 	}, nil
 }
 
+// editBody reads the new content in the original's part types, carrying its mentions so
+// an edit that adds an @name says who. No readable text means nothing to publish.
+func editBody(session *Session, edited *waE2E.Message) (body string, mentions []Mention, ok bool) {
+	text := edited.GetConversation()
+	if text == "" {
+		text = edited.GetExtendedTextMessage().GetText()
+	}
+	if text == "" {
+		text = edited.GetImageMessage().GetCaption()
+	}
+	if text == "" {
+		text = edited.GetVideoMessage().GetCaption()
+	}
+	if text == "" {
+		text = edited.GetDocumentMessage().GetCaption()
+	}
+	if text == "" {
+		return "", nil, false
+	}
+	body, mentions = mentionsIn(session, edited, whatsappToMarkdown(text))
+	return body, mentions, true
+}
+
+// editFor builds the webhook edit both wire shapes agree on, stamped with the chat's
+// state like any other event that can wake the consumer.
+func (m *Manager) editFor(
+	session *Session, evt *events.Message, edited *waE2E.Message,
+	ownID, original, conversation, sender string,
+) *WebhookEdit {
+	body, mentions, ok := editBody(session, edited)
+	if !ok {
+		m.log.Debugf("Unsupported edit content on %s", original)
+		return nil
+	}
+	muted, archived := chatMarks(session, evt.Info.Chat, evt.Info.Timestamp)
+	return &WebhookEdit{
+		ExternalID:          ownID,
+		OriginalMessageID:   original,
+		ConversationAddress: conversation,
+		SenderAddress:       sender,
+		Text:                body,
+		Mentions:            mentions,
+		Timestamp:           evt.Info.Timestamp.Format(time.RFC3339),
+		Muted:               muted,
+		Archived:            archived,
+	}
+}
+
+// handleSecretEncrypted translates the message-secret envelope — the shape WhatsApp
+// wraps an edit in, keyed to the message it edits and encrypted under that message's
+// secret. Only the client holding the original's secret can read it.
+func (m *Manager) handleSecretEncrypted(
+	session *Session, evt *events.Message, enc *waE2E.SecretEncryptedMessage,
+) {
+	if enc.GetSecretEncType() != waE2E.SecretEncryptedMessage_MESSAGE_EDIT {
+		m.log.Warnf("Skipping secret-encrypted %s (%s)", evt.Info.ID, enc.GetSecretEncType())
+		return
+	}
+	edited, err := session.Client.DecryptSecretEncryptedMessage(context.Background(), evt)
+	if err != nil {
+		m.log.Errorf("Decrypt edit %s failed: %v", evt.Info.ID, err)
+		return
+	}
+
+	key := enc.GetTargetMessageKey()
+	original := externalID(
+		session.Address, chatSegment(session, evt.Info.MessageSource),
+		keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
+		key.GetID(),
+	)
+	ownSegment := session.Address
+	if !evt.Info.IsFromMe {
+		ownSegment = canonicalUser(session, evt.Info.Sender, evt.Info.SenderAlt)
+	}
+	ownID := externalID(
+		session.Address, chatSegment(session, evt.Info.MessageSource), ownSegment, evt.Info.ID,
+	)
+
+	edit := m.editFor(
+		session, evt, edited, ownID, original,
+		conversationAddressFor(session, evt.Info.MessageSource),
+		senderAddressFor(session, evt.Info.MessageSource),
+	)
+	if edit == nil {
+		return
+	}
+	batch := WebhookBatch{OrganizationAddress: session.Address, Edits: []WebhookEdit{*edit}}
+	if err := m.openbsp.PostBatch(batch); err != nil {
+		m.log.Errorf("Post edit for %s failed: %v", original, err)
+		return
+	}
+	m.log.Infof("Published edit of %s (%d mentions)", original, len(edit.Mentions))
+}
+
 // handleProtocolMessage translates edits and revokes into the webhook's
 // edits/revokes arrays (applied as in-place updates keyed by the ORIGINAL
 // external id). Other protocol messages (app state, key distribution, ...)
@@ -519,35 +613,11 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 			Timestamp:           timestamp,
 		})
 	case waE2E.ProtocolMessage_MESSAGE_EDIT:
-		edited := pm.GetEditedMessage()
-		text := edited.GetConversation()
-		if text == "" {
-			text = edited.GetExtendedTextMessage().GetText()
-		}
-		if text == "" {
-			text = edited.GetImageMessage().GetCaption()
-		}
-		if text == "" {
-			text = edited.GetVideoMessage().GetCaption()
-		}
-		if text == "" {
-			text = edited.GetDocumentMessage().GetCaption()
-		}
-		if text == "" {
-			m.log.Debugf("Unsupported edit content on %s", original)
+		edit := m.editFor(session, evt, pm.GetEditedMessage(), ownID, original, conversation, sender)
+		if edit == nil {
 			return
 		}
-		muted, archived := chatMarks(session, evt.Info.Chat, evt.Info.Timestamp)
-		batch.Edits = append(batch.Edits, WebhookEdit{
-			ExternalID:          ownID,
-			OriginalMessageID:   original,
-			ConversationAddress: conversation,
-			SenderAddress:       sender,
-			Text:                whatsappToMarkdown(text),
-			Timestamp:           timestamp,
-			Muted:               muted,
-			Archived:            archived,
-		})
+		batch.Edits = append(batch.Edits, *edit)
 	default:
 		return
 	}
@@ -575,9 +645,22 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		return
 	}
 
+	if enc := evt.Message.GetSecretEncryptedMessage(); enc != nil {
+		m.handleSecretEncrypted(session, evt, enc)
+		return
+	}
+
 	content, mediaErr := m.buildContent(session, evt, true)
 	if content == nil {
-		m.log.Debugf("Skipping unsupported message %s (type %s)", evt.Info.ID, evt.Info.Type)
+		// A group's sender key rides its own enc block beside the words, and that leg
+		// carries no content by design — nothing is lost when it says nothing.
+		if evt.Message.GetSenderKeyDistributionMessage() != nil {
+			return
+		}
+		// Everything else is loud on purpose: an inbound message the bridge cannot read
+		// is one the consumer will never hear about, and a wire shape that changes under
+		// us looks exactly like silence until someone goes looking.
+		m.log.Warnf("Skipping unreadable message %s (type %s)", evt.Info.ID, evt.Info.Type)
 		return
 	}
 

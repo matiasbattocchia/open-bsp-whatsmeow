@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"testing"
 
+	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -99,5 +100,37 @@ func TestChatSegmentIsCanonicalInBothNamespaces(t *testing.T) {
 	group := types.NewJID("120363429869958481", types.GroupServer)
 	if got := chatSegment(session, types.MessageSource{Chat: group, IsGroup: true}); got != group.User {
 		t.Errorf("group chat segment = %q, want %q", got, group.User)
+	}
+}
+
+// An edit is where an @name most often arrives — the original was sent half-typed and
+// corrected a second later. What the consumer needs is the new text with the mention
+// resolved beside it; both wire shapes (protocol message, message-secret envelope)
+// converge here, so this is the one place that has to be right.
+func TestEditBodyCarriesTextAndMentions(t *testing.T) {
+	session := &Session{Address: "5491100000000"}
+	edited := extendedTextWithMentions(
+		"asado en tu casa el domingo @5491100000001 ?",
+		"5491100000001@s.whatsapp.net",
+	)
+
+	body, mentions, ok := editBody(session, edited)
+	if !ok {
+		t.Fatalf("an edit with text must publish")
+	}
+	if body != "asado en tu casa el domingo @5491100000001 ?" {
+		t.Fatalf("the new text must survive verbatim, got %q", body)
+	}
+	if len(mentions) != 1 || mentions[0].Address != "5491100000001" {
+		t.Fatalf("the edit must name who it mentions, got %+v", mentions)
+	}
+}
+
+// Nothing readable means nothing to publish: an edit of a kind we cannot render must
+// not reach the consumer as an empty message that blanks the original.
+func TestEditBodyRefusesUnreadableContent(t *testing.T) {
+	session := &Session{Address: "5491100000000"}
+	if _, _, ok := editBody(session, &waE2E.Message{}); ok {
+		t.Fatalf("an edit with no readable text must not publish")
 	}
 }

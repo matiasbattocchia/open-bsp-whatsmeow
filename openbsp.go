@@ -133,7 +133,10 @@ type WebhookEdit struct {
 	ConversationAddress string `json:"conversation_address,omitempty"`
 	SenderAddress       string `json:"sender_address,omitempty"`
 	Text                string `json:"text"`
-	Timestamp           string `json:"timestamp"`
+	// Who the new text names: an edit is where an @name most often arrives, the
+	// half-typed original having had none.
+	Mentions  []Mention `json:"mentions,omitempty"`
+	Timestamp string    `json:"timestamp"`
 	// The chat's state on arrival (see WebhookMessage) — an edit is its own
 	// event, so it carries the state too: else an edit in a muted chat would
 	// wake what the chat cannot.
