@@ -11,6 +11,7 @@ import (
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 // handleEvent translates whatsmeow's typed events into connector-webhook
@@ -506,6 +507,20 @@ func editBody(session *Session, edited *waE2E.Message) (body string, mentions []
 	return body, mentions, true
 }
 
+// fieldsOf names the fields a message carries, values omitted — enough to say what a
+// shape we cannot read is made of, without putting anyone's words in the log.
+func fieldsOf(msg *waE2E.Message) string {
+	var names []string
+	msg.ProtoReflect().Range(func(fd protoreflect.FieldDescriptor, _ protoreflect.Value) bool {
+		names = append(names, string(fd.Name()))
+		return true
+	})
+	if len(names) == 0 {
+		return "none"
+	}
+	return strings.Join(names, ", ")
+}
+
 // editFor builds the webhook edit both wire shapes agree on, stamped with the chat's
 // state like any other event that can wake the consumer.
 func (m *Manager) editFor(
@@ -514,7 +529,9 @@ func (m *Manager) editFor(
 ) *WebhookEdit {
 	body, mentions, ok := editBody(session, edited)
 	if !ok {
-		m.log.Debugf("Unsupported edit content on %s", original)
+		// Loud, and specific about the shape: a correction the consumer never hears is
+		// the same loss as a message it never hears, and the field names say what to read.
+		m.log.Warnf("Unreadable edit on %s (fields: %s)", original, fieldsOf(edited))
 		return nil
 	}
 	muted, archived := chatMarks(session, evt.Info.Chat, evt.Info.Timestamp)
@@ -546,8 +563,18 @@ func (m *Manager) handleSecretEncrypted(
 		m.log.Errorf("Decrypt edit %s failed: %v", evt.Info.ID, err)
 		return
 	}
+	m.log.Debugf("Decrypted edit envelope on %s", evt.Info.ID)
 
+	// The envelope holds the edit proper: the protocol message the old wire shape sent
+	// in the clear, now sealed under the target's secret. Its editedMessage is the new
+	// content, and its key names the message being replaced.
 	key := enc.GetTargetMessageKey()
+	if pm := edited.GetProtocolMessage(); pm.GetType() == waE2E.ProtocolMessage_MESSAGE_EDIT {
+		edited = pm.GetEditedMessage()
+		if pm.GetKey().GetID() != "" {
+			key = pm.GetKey()
+		}
+	}
 	original := externalID(
 		session.Address, chatSegment(session, evt.Info.MessageSource),
 		keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
