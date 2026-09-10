@@ -62,6 +62,18 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 			m.log.Errorf("Notify logged_out for %s failed: %v", session.Address, err)
 		}
 
+	case *events.OfflineSyncPreview:
+		if v.Messages > 0 {
+			m.log.Infof("Draining %d queued message(s) for %s", v.Messages, session.Address)
+			session.beginDrain(v.Messages)
+			// The queue must never strand the backlog: if the server stops mid-drain, or
+			// never says it finished, what is held still has to reach the consumer.
+			go m.drainDeadline(session, v.Messages)
+		}
+
+	case *events.OfflineSyncCompleted:
+		m.flushOffline(session)
+
 	case *events.Message:
 		m.handleMessage(session, v)
 
@@ -507,6 +519,38 @@ func editBody(session *Session, edited *waE2E.Message) (body string, mentions []
 	return body, mentions, true
 }
 
+// DRAIN_GRACE bounds the hold. A queue the server never finishes sending must not keep
+// the consumer from hearing what did arrive, so the hold gives up after this and posts.
+const DRAIN_GRACE = 90 * time.Second
+
+// flushOffline posts everything the hold kept, as one batch: the whole queue is one
+// arrival. A drain that held nothing posts nothing — the consumer stays asleep.
+func (m *Manager) flushOffline(session *Session) {
+	held := session.endDrain()
+	if len(held) == 0 {
+		return
+	}
+	m.log.Infof("Queue drained for %s — posting %d message(s) as one", session.Address, len(held))
+	batch := WebhookBatch{OrganizationAddress: session.Address, Messages: held}
+	if err := m.openbsp.PostBatch(batch); err != nil {
+		m.log.Errorf("Post drained queue for %s failed: %v", session.Address, err)
+	}
+}
+
+// drainDeadline is the hold's backstop — see DRAIN_GRACE.
+func (m *Manager) drainDeadline(session *Session, expected int) {
+	time.Sleep(DRAIN_GRACE)
+	session.offlineMu.Lock()
+	stranded := session.draining
+	session.offlineMu.Unlock()
+	if !stranded {
+		return
+	}
+	m.log.Warnf("Queue for %s never finished (%d announced) — posting what arrived",
+		session.Address, expected)
+	m.flushOffline(session)
+}
+
 // fieldsOf names the fields a message carries, values omitted — enough to say what a
 // shape we cannot read is made of, without putting anyone's words in the log.
 func fieldsOf(msg *waE2E.Message) string {
@@ -793,6 +837,15 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	}
 
 	batch.Messages = append(batch.Messages, message)
+
+	// An offline queue is ONE arrival, however many messages it holds: everything said
+	// while the host slept lands at once, and posted one by one it reads to the consumer
+	// as a conversation happening now — a wake per message, each turn answering the
+	// backlog as it grows. Held until the sync completes, it is a single batch: one
+	// commit, one wake, one window with all of it.
+	if session.holdOffline(batch) {
+		return
+	}
 
 	if err := m.openbsp.PostBatch(batch); err != nil {
 		m.log.Errorf("Post message %s failed: %v", message.ExternalID, err)

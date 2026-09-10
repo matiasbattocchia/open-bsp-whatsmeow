@@ -33,6 +33,13 @@ type Session struct {
 	groupsMu   sync.Mutex
 	groupsSent map[string]struct{}
 
+	// The offline queue being drained, if one is: WhatsApp announces how much it missed
+	// (OfflineSyncPreview), sends it, and says when it is done (OfflineSyncCompleted).
+	// Messages arriving between those two are one arrival, held here and posted together.
+	offlineMu   sync.Mutex
+	offlineHeld []WebhookMessage
+	draining    bool
+
 	// A group's subject, kept once GetGroupInfo answers, so every later
 	// message can carry conversation_name without another round-trip.
 	namesMu    sync.Mutex
@@ -167,6 +174,37 @@ const (
 	SLEEP_TICK = 10 * time.Second
 	SLEEP_GAP  = 30 * time.Second
 )
+
+// beginDrain opens the hold: what follows is the queue WhatsApp kept while we were away.
+func (s *Session) beginDrain(expected int) {
+	s.offlineMu.Lock()
+	defer s.offlineMu.Unlock()
+	s.draining = true
+	s.offlineHeld = make([]WebhookMessage, 0, expected)
+}
+
+// holdOffline keeps a queued batch's messages back, answering whether it took them. Only
+// messages are held: a receipt or an edit from the queue names a row the same batch
+// carries, and both are merges — order between them is the consumer's to settle, not ours.
+func (s *Session) holdOffline(batch WebhookBatch) bool {
+	s.offlineMu.Lock()
+	defer s.offlineMu.Unlock()
+	if !s.draining {
+		return false
+	}
+	s.offlineHeld = append(s.offlineHeld, batch.Messages...)
+	return true
+}
+
+// endDrain closes the hold and hands back everything it kept, in arrival order.
+func (s *Session) endDrain() []WebhookMessage {
+	s.offlineMu.Lock()
+	defer s.offlineMu.Unlock()
+	s.draining = false
+	held := s.offlineHeld
+	s.offlineHeld = nil
+	return held
+}
 
 // hostSlept answers whether the wall clock ran further between two ticks than the tick
 // itself can explain. Both times must carry no monotonic reading (see watchForResume).

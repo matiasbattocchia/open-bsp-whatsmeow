@@ -153,3 +153,34 @@ func TestHostSleptReadsTheWallClockGap(t *testing.T) {
 		t.Fatalf("45 minutes of wall clock with no ticks is a sleep")
 	}
 }
+
+// A queue drained after downtime is ONE arrival: held while it drains, handed back whole
+// and in order, and nothing held once it has been handed over. Posted message by message
+// instead, a backlog reads to the consumer as a conversation happening now.
+func TestOfflineQueueIsHeldAndHandedBackWhole(t *testing.T) {
+	s := &Session{Address: "5491100000000"}
+	one := WebhookBatch{Messages: []WebhookMessage{{ExternalID: "a"}}}
+
+	// with no drain open, a batch is the caller's to post
+	if s.holdOffline(one) {
+		t.Fatalf("a live message must not be held")
+	}
+
+	s.beginDrain(3)
+	for _, id := range []string{"a", "b", "c"} {
+		if !s.holdOffline(WebhookBatch{Messages: []WebhookMessage{{ExternalID: id}}}) {
+			t.Fatalf("a queued message must be held")
+		}
+	}
+
+	held := s.endDrain()
+	if len(held) != 3 || held[0].ExternalID != "a" || held[2].ExternalID != "c" {
+		t.Fatalf("the queue must come back whole and in order, got %+v", held)
+	}
+	if again := s.endDrain(); len(again) != 0 {
+		t.Fatalf("a drained queue holds nothing, got %+v", again)
+	}
+	if s.holdOffline(one) {
+		t.Fatalf("the drain is closed — live messages post again")
+	}
+}
