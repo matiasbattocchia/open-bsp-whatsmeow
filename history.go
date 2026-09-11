@@ -91,16 +91,13 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 				continue
 			}
 
-			senderSegment := session.Address
-			if !parsed.Info.IsFromMe {
-				senderSegment = canonicalUser(session, parsed.Info.Sender, parsed.Info.SenderAlt)
-			}
+			senderSegment := authorSegment(session, parsed.Info)
 
 			if content.ReMessageID == "" {
 				if stanza, participant := quotedRef(parsed.Message); stanza != "" {
 					content.ReMessageID = externalID(
 						session.Address, chatSegment(session, parsed.Info.MessageSource),
-						keySender(session, chat, false, participant), stanza,
+						keySender(session, chat, senderSegment, false, participant), stanza,
 					)
 				}
 			}

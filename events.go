@@ -303,12 +303,25 @@ func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
 	return "", ""
 }
 
+// authorSegment is who WROTE an event, as an external id's sender segment: the
+// account when the event is ours, the canonical sender otherwise.
+func authorSegment(session *Session, info types.MessageInfo) string {
+	if info.IsFromMe {
+		return session.Address
+	}
+	return canonicalUser(session, info.Sender, info.SenderAlt)
+}
+
 // keySender resolves the sender segment of an external id from
 // MessageKey-style references (fromMe + participant), falling back to the
 // DM peer (== chat) when no participant is given.
-func keySender(session *Session, chat types.JID, fromMe bool, participant string) string {
+//
+// `author` is who wrote the message CARRYING the key, because `fromMe` is written
+// in their frame: an edit or a reaction from somebody else says "mine" about THEIR
+// message, and reading it as ours would name a message the referent never was.
+func keySender(session *Session, chat types.JID, author string, fromMe bool, participant string) string {
 	if fromMe {
-		return session.Address
+		return author
 	}
 	if participant != "" {
 		if jid, err := types.ParseJID(participant); err == nil {
@@ -408,7 +421,10 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 			Data:    payload,
 			ReMessageID: externalID(
 				session.Address, chatSegment(session, evt.Info.MessageSource),
-				keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
+				keySender(
+					session, evt.Info.Chat, authorSegment(session, evt.Info),
+					key.GetFromMe(), key.GetParticipant(),
+				),
 				key.GetID(),
 			),
 		}, nil
@@ -619,15 +635,12 @@ func (m *Manager) handleSecretEncrypted(
 			key = pm.GetKey()
 		}
 	}
+	ownSegment := authorSegment(session, evt.Info)
 	original := externalID(
 		session.Address, chatSegment(session, evt.Info.MessageSource),
-		keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
+		keySender(session, evt.Info.Chat, ownSegment, key.GetFromMe(), key.GetParticipant()),
 		key.GetID(),
 	)
-	ownSegment := session.Address
-	if !evt.Info.IsFromMe {
-		ownSegment = canonicalUser(session, evt.Info.Sender, evt.Info.SenderAlt)
-	}
 	ownID := externalID(
 		session.Address, chatSegment(session, evt.Info.MessageSource), ownSegment, evt.Info.ID,
 	)
@@ -655,19 +668,17 @@ func (m *Manager) handleSecretEncrypted(
 func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, pm *waE2E.ProtocolMessage) {
 	batch := WebhookBatch{OrganizationAddress: session.Address}
 	key := pm.GetKey()
+	// the edit/revoke's OWN identity: the carrier protocol message, addressed like any
+	// message — so the consumer can log it as a first-class event beside the original,
+	// and so the key it carries is read in its author's frame
+	ownSegment := authorSegment(session, evt.Info)
 	original := externalID(
 		session.Address, chatSegment(session, evt.Info.MessageSource),
-		keySender(session, evt.Info.Chat, key.GetFromMe(), key.GetParticipant()),
+		keySender(session, evt.Info.Chat, ownSegment, key.GetFromMe(), key.GetParticipant()),
 		key.GetID(),
 	)
 	timestamp := evt.Info.Timestamp.Format(time.RFC3339)
 
-	// the edit/revoke's OWN identity: the carrier protocol message, addressed like any
-	// message — so the consumer can log it as a first-class event beside the original
-	ownSegment := session.Address
-	if !evt.Info.IsFromMe {
-		ownSegment = canonicalUser(session, evt.Info.Sender, evt.Info.SenderAlt)
-	}
 	ownID := externalID(
 		session.Address, chatSegment(session, evt.Info.MessageSource), ownSegment, evt.Info.ID,
 	)
@@ -739,10 +750,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	// Free knowledge: the namespace this chat speaks, for outbound mentions.
 	session.noteAddressingMode(chat.String(), evt.Info.AddressingMode)
 
-	senderSegment := session.Address
-	if !evt.Info.IsFromMe {
-		senderSegment = canonicalUser(session, evt.Info.Sender, evt.Info.SenderAlt)
-	}
+	senderSegment := authorSegment(session, evt.Info)
 
 	// Replies: surface the quoted message as re_message_id (reactions
 	// already carry their target there).
@@ -750,7 +758,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		if stanza, participant := quotedRef(evt.Message); stanza != "" {
 			content.ReMessageID = externalID(
 				session.Address, chatSegment(session, evt.Info.MessageSource),
-				keySender(session, chat, false, participant), stanza,
+				keySender(session, chat, senderSegment, false, participant), stanza,
 			)
 		}
 	}

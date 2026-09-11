@@ -104,6 +104,51 @@ func TestChatSegmentIsCanonicalInBothNamespaces(t *testing.T) {
 	}
 }
 
+// A MessageKey is written in the frame of whoever SENT the message carrying it. When
+// somebody else edits their own line in a group, `fromMe` is theirs, and reading it as
+// ours names a message that was never sent: the edit lands pointing at nothing, the
+// consumer resolves it to "elsewhere", and the model reads a correction without ever
+// seeing what was corrected — with the original sitting two rows above it.
+func TestKeySenderReadsFromMeInTheCarriersFrame(t *testing.T) {
+	session := &Session{Address: "5491133585694"}
+	group := types.NewJID("120363025580475259", types.GroupServer)
+	peer := "5492616514662"
+
+	// their edit, of their own message: the key's "mine" is theirs
+	if got := keySender(session, group, peer, true, ""); got != peer {
+		t.Errorf("their edit of their own message = %q, want %q", got, peer)
+	}
+	// ours still names us — the account is the author of what the account sends
+	if got := keySender(session, group, session.Address, true, ""); got != session.Address {
+		t.Errorf("our own edit = %q, want %q", got, session.Address)
+	}
+	// a key that names its participant says so outright, whoever carries it
+	other := "5491199999999"
+	if got := keySender(session, group, peer, false, other+"@s.whatsapp.net"); got != other {
+		t.Errorf("keyed participant = %q, want %q", got, other)
+	}
+	// a DM carries no participant: the peer IS the chat
+	dm := types.NewJID(other, types.DefaultUserServer)
+	if got := keySender(session, dm, peer, false, ""); got != other {
+		t.Errorf("dm fallback = %q, want %q", got, other)
+	}
+}
+
+// Who wrote an event, as an id segment — the value the frame above is read against.
+func TestAuthorSegmentIsTheWriterNotTheAccount(t *testing.T) {
+	session := &Session{Address: "5491133585694"}
+	sender := types.NewJID("5492616514662", types.DefaultUserServer)
+
+	ours := types.MessageInfo{MessageSource: types.MessageSource{IsFromMe: true, Sender: sender}}
+	if got := authorSegment(session, ours); got != session.Address {
+		t.Errorf("our own event = %q, want %q", got, session.Address)
+	}
+	theirs := types.MessageInfo{MessageSource: types.MessageSource{Sender: sender}}
+	if got := authorSegment(session, theirs); got != sender.User {
+		t.Errorf("their event = %q, want %q", got, sender.User)
+	}
+}
+
 // An edit is where an @name most often arrives — the original was sent half-typed and
 // corrected a second later. What the consumer needs is the new text with the mention
 // resolved beside it; both wire shapes (protocol message, message-secret envelope)
