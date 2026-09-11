@@ -36,3 +36,31 @@ func TestMediaUploadTimeoutScalesWithSizeAndIsBounded(t *testing.T) {
 		prev = got
 	}
 }
+
+// A session delivers where its pairing said; one that said nothing delivers
+// where the bridge does. The derived client is the same client but for the
+// address — the token and the pools are not copied into a second life.
+func TestAtAimsOneClientPerReceiver(t *testing.T) {
+	shared := NewOpenBSP(&Config{OpenBSPURL: "http://kong:8000/functions/v1", BridgeToken: "t"})
+
+	if got := shared.at(""); got != shared {
+		t.Fatal("a session naming no receiver must post through the bridge-wide client itself")
+	}
+
+	own := shared.at("http://localhost:8794")
+	if own.Base() != "http://localhost:8794" {
+		t.Fatalf("Base = %q, want the session's own receiver", own.Base())
+	}
+	if shared.Base() != "http://kong:8000/functions/v1" {
+		t.Fatal("aiming a copy must not move the bridge-wide client")
+	}
+	if own.token != shared.token || own.http != shared.http || own.mediaHTTP != shared.mediaHTTP {
+		t.Fatal("the aimed client must share the token and the HTTP clients")
+	}
+
+	// A bridge with no OPENBSP_URL at all: every session brings its own.
+	none := NewOpenBSP(&Config{BridgeToken: "t"})
+	if none.Base() != "" || none.at("http://localhost:8793").Base() != "http://localhost:8793" {
+		t.Fatal("an unset OPENBSP_URL is an empty base until a session names one")
+	}
+}

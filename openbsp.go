@@ -16,6 +16,11 @@ import (
 // whatsapp-web-webhook (message traffic) and whatsapp-web-management
 // (session lifecycle events). The bridge holds no Supabase credentials —
 // just the shared bridge token.
+//
+// The receiver is PER SESSION: each paired account delivers to the base its
+// pairing named (SessionMapping.WebhookURL), and the bridge-wide OPENBSP_URL
+// is what a session that named none falls back to. One sidecar, many
+// consumers — `at` derives the client a session posts through.
 type OpenBSP struct {
 	baseURL string
 	token   string
@@ -36,6 +41,25 @@ func NewOpenBSP(cfg *Config) *OpenBSP {
 		mediaHTTP:  &http.Client{},
 		LinkEvents: cfg.LinkEvents,
 	}
+}
+
+// at is the client a session delivers through: this one, or a copy aimed at
+// base when the session named its own receiver. Everything but the address is
+// shared — one token, one pair of HTTP clients — so a bridge serving many
+// consumers still holds one connection pool.
+func (o *OpenBSP) at(base string) *OpenBSP {
+	if base == "" {
+		return o
+	}
+	aimed := *o
+	aimed.baseURL = base
+	return &aimed
+}
+
+// Base is where this client delivers — the address a relative media_url
+// resolves against, since the consumer that sent it is the one being posted to.
+func (o *OpenBSP) Base() string {
+	return o.baseURL
 }
 
 // How long to wait for an upload of size bytes. whatsmeow calls event

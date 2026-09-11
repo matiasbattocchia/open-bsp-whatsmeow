@@ -53,7 +53,7 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 
 	case *events.LoggedOut:
 		m.log.Warnf("Session %s logged out (reason %d)", session.Address, v.Reason)
-		if err := m.openbsp.PostSessionEvent(SessionEvent{
+		if err := session.receiver.PostSessionEvent(SessionEvent{
 			Event:          "logged_out",
 			OrganizationID: session.OrganizationID,
 			Address:        session.Address,
@@ -88,7 +88,7 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 					{Address: v.JID.String(), Name: v.Name.Name},
 				},
 			}
-			if err := m.openbsp.PostBatch(batch); err != nil {
+			if err := session.receiver.PostBatch(batch); err != nil {
 				m.log.Errorf("Post group rename for %s failed: %v", v.JID, err)
 			}
 		}
@@ -476,7 +476,7 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 		return placeholder, fmt.Errorf("download media: %w", err)
 	}
 
-	uri, err := m.openbsp.UploadMedia(session.Address, media.name, data)
+	uri, err := session.receiver.UploadMedia(session.Address, media.name, data)
 	if err != nil {
 		return placeholder, fmt.Errorf("store media: %w", err)
 	}
@@ -532,7 +532,7 @@ func (m *Manager) flushOffline(session *Session) {
 	}
 	m.log.Infof("Queue drained for %s — posting %d message(s) as one", session.Address, len(held))
 	batch := WebhookBatch{OrganizationAddress: session.Address, Messages: held}
-	if err := m.openbsp.PostBatch(batch); err != nil {
+	if err := session.receiver.PostBatch(batch); err != nil {
 		m.log.Errorf("Post drained queue for %s failed: %v", session.Address, err)
 	}
 }
@@ -641,7 +641,7 @@ func (m *Manager) handleSecretEncrypted(
 		return
 	}
 	batch := WebhookBatch{OrganizationAddress: session.Address, Edits: []WebhookEdit{*edit}}
-	if err := m.openbsp.PostBatch(batch); err != nil {
+	if err := session.receiver.PostBatch(batch); err != nil {
 		m.log.Errorf("Post edit for %s failed: %v", original, err)
 		return
 	}
@@ -693,7 +693,7 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 		return
 	}
 
-	if err := m.openbsp.PostBatch(batch); err != nil {
+	if err := session.receiver.PostBatch(batch); err != nil {
 		m.log.Errorf("Post edit/revoke for %s failed: %v", original, err)
 	}
 }
@@ -808,7 +808,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 					return
 				}
 				session.noteGroupName(chat.String(), info.Name)
-				if err := m.openbsp.PostBatch(WebhookBatch{
+				if err := session.receiver.PostBatch(WebhookBatch{
 					OrganizationAddress: session.Address,
 					Groups: []WebhookGroup{
 						{Address: chat.String(), Name: info.Name},
@@ -847,7 +847,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		return
 	}
 
-	if err := m.openbsp.PostBatch(batch); err != nil {
+	if err := session.receiver.PostBatch(batch); err != nil {
 		m.log.Errorf("Post message %s failed: %v", message.ExternalID, err)
 	}
 }
@@ -912,7 +912,7 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 		batch.Statuses = append(batch.Statuses, status)
 	}
 
-	if err := m.openbsp.PostBatch(batch); err != nil {
+	if err := session.receiver.PostBatch(batch); err != nil {
 		m.log.Errorf("Post receipts for %s failed: %v", evt.Chat, err)
 	}
 }

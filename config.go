@@ -18,8 +18,11 @@ type Config struct {
 	//	              embedded SQLite, no server to run — the file holds both.
 	//	              Put it on a persistent volume: it IS the session.
 	DatabaseURL string
-	// Base URL of the OpenBSP edge functions, e.g.
-	// http://kong:8000/functions/v1
+	// Base URL of the receiver every session delivers to unless its pairing
+	// named its own (POST /sessions webhook_url), e.g.
+	// http://kong:8000/functions/v1. Optional: a bridge whose sessions all
+	// name their receiver needs none, and a pairing that names none is
+	// refused when this is unset.
 	OpenBSPURL string
 	// Shared bearer token, used in both directions: the bridge authenticates
 	// its posts to whatsapp-web-webhook / whatsapp-web-management with it,
@@ -45,9 +48,6 @@ func ConfigFromEnv() (*Config, error) {
 
 	if cfg.DatabaseURL == "" {
 		return nil, fmt.Errorf("DATABASE_URL is required")
-	}
-	if cfg.OpenBSPURL == "" {
-		return nil, fmt.Errorf("OPENBSP_URL is required")
 	}
 	if cfg.BridgeToken == "" {
 		return nil, fmt.Errorf("BRIDGE_TOKEN is required")

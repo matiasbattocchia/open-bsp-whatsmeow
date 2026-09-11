@@ -43,7 +43,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			})
 		}
 		if len(batch.Contacts) > 0 {
-			if err := m.openbsp.PostBatch(batch); err != nil {
+			if err := session.receiver.PostBatch(batch); err != nil {
 				m.log.Errorf("Post history pushnames failed: %v", err)
 			}
 		}
@@ -54,7 +54,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 		if len(pending.Messages) == 0 {
 			return
 		}
-		if err := m.openbsp.PostBatch(pending); err != nil {
+		if err := session.receiver.PostBatch(pending); err != nil {
 			m.log.Errorf("Post history batch failed: %v", err)
 		}
 		pending = WebhookBatch{OrganizationAddress: session.Address, History: true}

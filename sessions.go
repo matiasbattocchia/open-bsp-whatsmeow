@@ -24,6 +24,13 @@ type Session struct {
 	// Empty for the org's shared inbox; set, the member whose personal
 	// session this is (organizations_addresses.agent_id).
 	AgentID string
+	// The receiver this session's pairing named (SessionMapping.WebhookURL);
+	// empty is the bridge-wide OPENBSP_URL. Kept verbatim for the mapping —
+	// `receiver` is the client it resolves to.
+	WebhookURL string
+	// Where this session's traffic goes: every post about it — batches,
+	// media, lifecycle — rides this client and no other.
+	receiver *OpenBSP
 	// Set while the session is pairing; used to surface QR rotation and
 	// completion to the polling endpoint.
 	Pending *PendingSession
@@ -155,8 +162,12 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.log.Warnf("Device %s has no OpenBSP mapping; skipping", device.ID)
 			continue
 		}
+		if mapping.WebhookURL == "" && m.openbsp.Base() == "" {
+			m.log.Warnf("Device %s names no receiver and OPENBSP_URL is unset; skipping", device.ID)
+			continue
+		}
 
-		session := m.register(device, mapping.OrganizationID, mapping.Address, mapping.AgentID)
+		session := m.register(device, mapping)
 		if err := session.Client.Connect(); err != nil {
 			m.log.Errorf("Connect %s failed: %v", mapping.Address, err)
 		}
@@ -252,18 +263,20 @@ func (m *Manager) watchForResume() {
 	}
 }
 
-func (m *Manager) register(device *store.Device, organizationID, address, agentID string) *Session {
-	client := whatsmeow.NewClient(device, m.log.Sub("client/"+address))
+func (m *Manager) register(device *store.Device, mapping *SessionMapping) *Session {
+	client := whatsmeow.NewClient(device, m.log.Sub("client/"+mapping.Address))
 	session := &Session{
 		Client:         client,
-		OrganizationID: organizationID,
-		Address:        address,
-		AgentID:        agentID,
+		OrganizationID: mapping.OrganizationID,
+		Address:        mapping.Address,
+		AgentID:        mapping.AgentID,
+		WebhookURL:     mapping.WebhookURL,
+		receiver:       m.openbsp.at(mapping.WebhookURL),
 	}
 	client.AddEventHandler(func(evt any) { m.handleEvent(session, evt) })
 
 	m.mu.Lock()
-	m.sessions[address] = session
+	m.sessions[mapping.Address] = session
 	m.mu.Unlock()
 
 	return session
@@ -329,12 +342,18 @@ func (p *PendingSession) state() *PairingState {
 // polling) or, when phoneNumber is given, a phone pairing code. Pairing
 // completes asynchronously: on PairSuccess the event handler saves the
 // mapping, notifies whatsapp-web-management, and flips the pending status.
-func (m *Manager) CreateSession(ctx context.Context, organizationID, phoneNumber, agentID string) (*PairingState, error) {
+// webhookURL is where the paired session will deliver; empty means the
+// bridge-wide OPENBSP_URL, and the caller has checked that one of the two exists.
+func (m *Manager) CreateSession(
+	ctx context.Context, organizationID, phoneNumber, agentID, webhookURL string,
+) (*PairingState, error) {
 	device := m.store.Container.NewDevice()
 	session := &Session{
 		Client:         whatsmeow.NewClient(device, m.log.Sub("client/pairing")),
 		OrganizationID: organizationID,
 		AgentID:        agentID,
+		WebhookURL:     webhookURL,
+		receiver:       m.openbsp.at(webhookURL),
 	}
 
 	pending := &PendingSession{
@@ -496,11 +515,12 @@ func (m *Manager) completePairing(session *Session, ownJID types.JID) {
 		OrganizationID: session.OrganizationID,
 		Address:        session.Address,
 		AgentID:        session.AgentID,
+		WebhookURL:     session.WebhookURL,
 	}); err != nil {
 		m.log.Errorf("Save mapping for %s failed: %v", ownJID, err)
 	}
 
-	if err := m.openbsp.PostSessionEvent(SessionEvent{
+	if err := session.receiver.PostSessionEvent(SessionEvent{
 		Event:          "connected",
 		OrganizationID: session.OrganizationID,
 		Address:        session.Address,
@@ -518,7 +538,7 @@ func (m *Manager) postLinkState(session *Session, state string) {
 		return
 	}
 	m.log.Infof("Session %s %s", session.Address, state)
-	if err := m.openbsp.PostSessionEvent(SessionEvent{
+	if err := session.receiver.PostSessionEvent(SessionEvent{
 		Event:          state,
 		OrganizationID: session.OrganizationID,
 		Address:        session.Address,

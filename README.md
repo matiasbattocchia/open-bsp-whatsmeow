@@ -38,7 +38,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 | Env             | Required | Description                                             |
 | --------------- | -------- | ------------------------------------------------------- |
 | `DATABASE_URL`  | yes      | Database DSN; the engine follows the scheme. `postgres://…` — `search_path=whatsmeow` and `default_query_exec_mode=simple_protocol` appended if absent (the latter is required behind transaction-mode poolers like Supavisor 6543). `file:…` / `sqlite:…` — embedded SQLite, no server to run; `foreign_keys`, `journal_mode=WAL` and `busy_timeout` pragmas appended if absent. Put the file on a persistent volume: it holds the session |
-| `OPENBSP_URL`   | yes      | Edge functions base, e.g. `http://kong:8000/functions/v1` |
+| `OPENBSP_URL`   | no       | Where a session delivers when its pairing named no `webhook_url`, e.g. `http://kong:8000/functions/v1`. Unset ⇒ every `POST /sessions` must name one |
 | `BRIDGE_TOKEN`  | yes      | Shared bearer token (must match `WHATSAPP_WEB_TOKEN` in OpenBSP) |
 | `LISTEN_ADDR`   | no       | Default `:$PORT` (PaaS convention) or `:8081`            |
 | `LOG_LEVEL`     | no       | Default `INFO`                                           |
@@ -78,8 +78,11 @@ services:
 - `POST /dispatch` — called by `whatsapp-web-dispatcher`;
   `{type: "message"|"status", record, media_url?}` → `{external_id, status}`.
   4xx = permanent failure, 5xx = transient (retried by OpenBSP's cron).
-- `POST /sessions` — `{organization_id, phone_number?}` →
+- `POST /sessions` — `{organization_id, phone_number?, agent_id?, webhook_url?}` →
   `{session_id, status: "pending", qr_code?}` or `{..., pairing_code?}`.
+  `webhook_url` is where THIS session's traffic (webhook batches, media
+  uploads, session events, relative `media_url` fetches) goes, kept with its
+  mapping; absent ⇒ `OPENBSP_URL`. One bridge can serve many consumers.
 - `GET /sessions/pending/{session_id}` — poll during pairing (QR codes
   rotate ~20s): `{session_id, status: pending|paired|error, qr_code?,
   pairing_code?, address?, error?}`.

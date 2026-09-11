@@ -54,7 +54,10 @@ func TestSQLiteStoreRoundTrip(t *testing.T) {
 		t.Fatalf("GetAllDevices: %v", err)
 	}
 
-	m := SessionMapping{DeviceJID: "5491100000000.0:1@s.whatsapp.net", OrganizationID: "org", Address: "5491100000000"}
+	m := SessionMapping{
+		DeviceJID: "5491100000000.0:1@s.whatsapp.net", OrganizationID: "org", Address: "5491100000000",
+		WebhookURL: "http://localhost:8794",
+	}
 	if err := st.SaveMapping(ctx, m); err != nil {
 		t.Fatalf("SaveMapping: %v", err)
 	}

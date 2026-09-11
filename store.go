@@ -143,16 +143,21 @@ func finishOpen(ctx context.Context, db *sql.DB, dialect string, log waLog.Logge
 			device_jid      text primary key,
 			organization_id text not null,
 			address         text not null,
-			agent_id        text not null default ''
+			agent_id        text not null default '',
+			webhook_url     text not null default ''
 		)`); err != nil {
 		return nil, fmt.Errorf("create bridge_sessions: %w", err)
 	}
 
-	// Existing databases predate the column; neither engine has a portable
-	// IF NOT EXISTS for it, so the duplicate-column error is the no-op path.
-	if _, err := db.ExecContext(ctx, `
-		alter table bridge_sessions add column agent_id text not null default ''`); err == nil {
-		log.Infof("Added bridge_sessions.agent_id")
+	// Existing databases predate these columns; neither engine has a portable
+	// IF NOT EXISTS for one, so the duplicate-column error is the no-op path.
+	for _, column := range []string{
+		"agent_id text not null default ''",
+		"webhook_url text not null default ''",
+	} {
+		if _, err := db.ExecContext(ctx, `alter table bridge_sessions add column `+column); err == nil {
+			log.Infof("Added bridge_sessions.%s", strings.Fields(column)[0])
+		}
 	}
 
 	return &Store{DB: db, Container: container}, nil
@@ -168,24 +173,30 @@ type SessionMapping struct {
 	// Empty means the address is the org's shared inbox; set, it names the
 	// member whose personal session this is (organizations_addresses.agent_id).
 	AgentID string
+	// Where this session's traffic is delivered — the base the webhook, media
+	// and session-event routes resolve against. Named by whoever asked for
+	// the pairing (POST /sessions); empty means the bridge-wide OPENBSP_URL,
+	// which is the only receiver open-bsp-api ever names.
+	WebhookURL string
 }
 
 func (s *Store) SaveMapping(ctx context.Context, m SessionMapping) error {
 	_, err := s.DB.ExecContext(ctx, `
-		insert into bridge_sessions (device_jid, organization_id, address, agent_id)
-		values ($1, $2, $3, $4)
+		insert into bridge_sessions (device_jid, organization_id, address, agent_id, webhook_url)
+		values ($1, $2, $3, $4, $5)
 		on conflict (device_jid) do update
 		set organization_id = excluded.organization_id, address = excluded.address,
-		    agent_id = excluded.agent_id`,
-		m.DeviceJID, m.OrganizationID, m.Address, m.AgentID)
+		    agent_id = excluded.agent_id, webhook_url = excluded.webhook_url`,
+		m.DeviceJID, m.OrganizationID, m.Address, m.AgentID, m.WebhookURL)
 	return err
 }
 
 func (s *Store) GetMapping(ctx context.Context, deviceJID string) (*SessionMapping, error) {
 	m := SessionMapping{DeviceJID: deviceJID}
 	err := s.DB.QueryRowContext(ctx, `
-		select organization_id, address, agent_id from bridge_sessions where device_jid = $1`,
-		deviceJID).Scan(&m.OrganizationID, &m.Address, &m.AgentID)
+		select organization_id, address, agent_id, webhook_url
+		from bridge_sessions where device_jid = $1`,
+		deviceJID).Scan(&m.OrganizationID, &m.Address, &m.AgentID, &m.WebhookURL)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

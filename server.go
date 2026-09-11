@@ -105,8 +105,9 @@ type dispatchRequest struct {
 	} `json:"record"`
 	// Where the bytes are fetched from for a file part: a signed download URL
 	// for content.file.uri. May be RELATIVE ("/m/<signed>"), in which case it
-	// resolves against OPENBSP_URL — the consumer's own address, the one this
-	// bridge already delivers to, so it never has to state its host to us.
+	// resolves against the session's receiver — the consumer's own address,
+	// the one this bridge already delivers to, so it never has to state its
+	// host to us twice.
 	MediaURL string `json:"media_url"`
 }
 
@@ -120,20 +121,20 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.MediaURL != "" {
-		resolved, err := resolveMediaURL(s.cfg.OpenBSPURL, req.MediaURL)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			return
-		}
-		req.MediaURL = resolved
-	}
-
 	session := s.manager.Get(req.Record.OrganizationAddress)
 	if session == nil {
 		// Unknown session is permanent from this bridge's point of view.
 		http.Error(w, "unknown session "+req.Record.OrganizationAddress, http.StatusNotFound)
 		return
+	}
+
+	if req.MediaURL != "" {
+		resolved, err := resolveMediaURL(session.receiver.Base(), req.MediaURL)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		req.MediaURL = resolved
 	}
 	if !session.Client.IsConnected() {
 		http.Error(w, "session not connected", http.StatusServiceUnavailable)
@@ -472,8 +473,8 @@ var kindToMediaType = map[string]whatsmeow.MediaType{
 
 // resolveMediaURL makes a media_url absolute. An absolute one is taken as it
 // stands (open-bsp-api sends signed storage links); a relative one is resolved
-// against the OpenBSP base, which is where this bridge already posts webhooks —
-// so a consumer serving its own media needs no configured hostname of its own.
+// against the session's receiver, which is where this bridge already posts its
+// webhooks — so a consumer serving its own media states its address once.
 func resolveMediaURL(base, media string) (string, error) {
 	ref, err := url.Parse(media)
 	if err != nil {
@@ -484,7 +485,7 @@ func resolveMediaURL(base, media string) (string, error) {
 	}
 	b, err := url.Parse(base)
 	if err != nil {
-		return "", fmt.Errorf("OPENBSP_URL: %w", err)
+		return "", fmt.Errorf("receiver base: %w", err)
 	}
 	return b.ResolveReference(ref).String(), nil
 }
@@ -720,6 +721,11 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// function; the bridge just carries it through to the mapping and
 		// the connected event.
 		AgentID string `json:"agent_id"`
+		// Optional: where THIS session delivers (webhook, media, lifecycle),
+		// kept with its mapping. A consumer that runs its own receiver per
+		// tenant names it here; one receiver for the whole bridge is
+		// OPENBSP_URL, the fallback.
+		WebhookURL string `json:"webhook_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -729,8 +735,20 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "organization_id is required", http.StatusBadRequest)
 		return
 	}
+	if req.WebhookURL == "" && s.cfg.OpenBSPURL == "" {
+		http.Error(w, "webhook_url is required — this bridge has no OPENBSP_URL to fall back to", http.StatusBadRequest)
+		return
+	}
+	if req.WebhookURL != "" {
+		if u, err := url.Parse(req.WebhookURL); err != nil || !u.IsAbs() {
+			http.Error(w, "webhook_url must be an absolute http(s) URL", http.StatusBadRequest)
+			return
+		}
+	}
 
-	result, err := s.manager.CreateSession(r.Context(), req.OrganizationID, req.PhoneNumber, req.AgentID)
+	result, err := s.manager.CreateSession(
+		r.Context(), req.OrganizationID, req.PhoneNumber, req.AgentID, req.WebhookURL,
+	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
