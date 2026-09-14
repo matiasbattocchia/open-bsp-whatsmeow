@@ -61,6 +61,12 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 		}); err != nil {
 			m.log.Errorf("Notify logged_out for %s failed: %v", session.Address, err)
 		}
+		// The phone unlinked us: whatsmeow has already deleted the device, so
+		// our mapping goes with it. Nothing short of a new pairing brings this
+		// session back.
+		if err := m.forget(context.Background(), session); err != nil {
+			m.log.Errorf("Forget %s failed: %v", session.Address, err)
+		}
 
 	case *events.OfflineSyncPreview:
 		if v.Messages > 0 {

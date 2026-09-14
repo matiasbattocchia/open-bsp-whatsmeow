@@ -18,7 +18,12 @@ import (
 // OpenBSP linkage. Address is the canonical bare digits of the session's own
 // number (organizations_addresses.address for the 'whatsapp-web' service).
 type Session struct {
-	Client         *whatsmeow.Client
+	Client *whatsmeow.Client
+	// The key of this session's bridge_sessions row. Kept here because a
+	// remote unlink has whatsmeow delete the device before it hands us the
+	// LoggedOut event, and by then Client.Store.ID is gone — the row would
+	// outlive the device with nothing left to name it.
+	DeviceJID      string
 	OrganizationID string
 	Address        string
 	// Empty for the org's shared inbox; set, the member whose personal
@@ -267,6 +272,7 @@ func (m *Manager) register(device *store.Device, mapping *SessionMapping) *Sessi
 	client := whatsmeow.NewClient(device, m.log.Sub("client/"+mapping.Address))
 	session := &Session{
 		Client:         client,
+		DeviceJID:      mapping.DeviceJID,
 		OrganizationID: mapping.OrganizationID,
 		Address:        mapping.Address,
 		AgentID:        mapping.AgentID,
@@ -497,6 +503,7 @@ func (m *Manager) failPending(session *Session, reason string) {
 // of a session that has no address yet.
 func (m *Manager) completePairing(session *Session, ownJID types.JID) {
 	session.Address = ownJID.User
+	session.DeviceJID = ownJID.String()
 
 	m.mu.Lock()
 	m.sessions[session.Address] = session
@@ -511,7 +518,7 @@ func (m *Manager) completePairing(session *Session, ownJID types.JID) {
 	ctx := context.Background()
 
 	if err := m.store.SaveMapping(ctx, SessionMapping{
-		DeviceJID:      ownJID.String(),
+		DeviceJID:      session.DeviceJID,
 		OrganizationID: session.OrganizationID,
 		Address:        session.Address,
 		AgentID:        session.AgentID,
@@ -574,24 +581,28 @@ func (m *Manager) Logout(ctx context.Context, address string) error {
 		return fmt.Errorf("unknown session %s", address)
 	}
 
-	deviceJID := ""
-	if session.Client.Store.ID != nil {
-		deviceJID = session.Client.Store.ID.String()
-	}
-
 	if err := session.Client.Logout(ctx); err != nil {
 		return fmt.Errorf("logout: %w", err)
 	}
 
-	if deviceJID != "" {
-		if err := m.store.DeleteMapping(ctx, deviceJID); err != nil {
-			return fmt.Errorf("delete mapping: %w", err)
-		}
+	if err := m.forget(ctx, session); err != nil {
+		return fmt.Errorf("delete mapping: %w", err)
 	}
 
+	return nil
+}
+
+// forget drops everything this bridge keeps about a session whose device is
+// gone: the mapping row, so boot stops looking for a device that no longer
+// exists, and the live entry, so a dispatch for the address is answered
+// "unknown" — which it now is — rather than "not connected".
+func (m *Manager) forget(ctx context.Context, session *Session) error {
 	m.mu.Lock()
-	delete(m.sessions, address)
+	delete(m.sessions, session.Address)
 	m.mu.Unlock()
 
-	return nil
+	if session.DeviceJID == "" {
+		return nil
+	}
+	return m.store.DeleteMapping(ctx, session.DeviceJID)
 }
