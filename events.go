@@ -182,6 +182,21 @@ func pickName(contact types.ContactInfo, live string) string {
 	return ""
 }
 
+// ownName is what the account calls itself: the push name it set, else the
+// storefront a business trades under. It is the wire's word for our own side
+// and nothing more — whose hands typed it (a companion device, a consumer's
+// own send) is the consumer's question, and the address already says which
+// account it was.
+func ownName(session *Session) string {
+	if session.Client == nil || session.Client.Store == nil {
+		return ""
+	}
+	if name := strings.TrimSpace(session.Client.Store.PushName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(session.Client.Store.BusinessName)
+}
+
 // contactName is pickName over the contact store, keyed by canonical digits.
 // A miss is not an error: plenty of numbers are in no address book, and the
 // consumer's fallback is the address itself.
@@ -783,10 +798,13 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		Archived:            archived,
 	}
 	// The event's pushname is the AUTHOR's, so it only speaks for the author:
-	// on an echo it is our own name, and lending it to the peer would name the
-	// chat after ourselves.
+	// on an echo it is our own name, and lending it to the peer (`live` names
+	// the DM below) would name the chat after ourselves. Our own side is named
+	// off the device store instead, so an echo says who sent it like any row.
 	live := ""
-	if !evt.Info.IsFromMe {
+	if evt.Info.IsFromMe {
+		message.SenderName = ownName(session)
+	} else {
 		live = evt.Info.PushName
 		message.SenderName = contactName(session, message.SenderAddress, live)
 	}

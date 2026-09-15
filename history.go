@@ -116,7 +116,9 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			// The import carries names too — the contact store is already
 			// synced when history arrives, and a year of rows that name
 			// nobody is a year the consumer can only search by number.
-			if !parsed.Info.IsFromMe {
+			if parsed.Info.IsFromMe {
+				message.SenderName = ownName(session)
+			} else {
 				message.SenderName = contactName(session, message.SenderAddress, parsed.Info.PushName)
 			}
 			if !parsed.Info.IsGroup {
