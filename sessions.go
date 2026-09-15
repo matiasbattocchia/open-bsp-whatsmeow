@@ -228,6 +228,25 @@ func hostSlept(last, now time.Time) bool {
 	return now.Sub(last) >= SLEEP_TICK+SLEEP_GAP
 }
 
+// REDIAL_BACKOFF is the wait before dial number N+1 of a session that owes one, by dials
+// already failed. The first rungs are short because the usual cause is a lid: the host is
+// awake seconds before its network is. The last is the ceiling, kept for the session that
+// is refused for a lasting reason.
+var REDIAL_BACKOFF = []time.Duration{
+	10 * time.Second,
+	20 * time.Second,
+	40 * time.Second,
+	80 * time.Second,
+	160 * time.Second,
+	5 * time.Minute,
+}
+
+// redialWait is the ladder's rung for a session that has failed this many dials — the last
+// one for good, so a session that can never dial is tried on the ceiling forever.
+func redialWait(failed int) time.Duration {
+	return REDIAL_BACKOFF[min(failed, len(REDIAL_BACKOFF)-1)]
+}
+
 // watchForResume brings every session's socket back the moment the host wakes. A suspend
 // leaves TCP connections that accept writes and never answer, and whatsmeow waits three
 // minutes of failed keepalives before dialling again — measured on the monotonic clock,
@@ -235,19 +254,26 @@ func hostSlept(last, now time.Time) bool {
 // The account is deaf for all of them, and WhatsApp holds everything sent meanwhile in
 // its offline queue. A tick that returns far later on the wall clock than it was due is
 // the host waking: the sockets from before the sleep are already dead, so dial now.
+//
+// A dial that fails is not an ending: with no socket there are no keepalives, so nothing
+// in whatsmeow ever dials again and the account stays deaf until someone restarts the
+// bridge. The lid makes this the ordinary case — the first dial after a resume lands
+// before the wifi does and resolves nothing. So a failed dial leaves the session OWING
+// one, and every tick pays the debt until it takes, backing off so a session refused for
+// a lasting reason is not dialled every ten seconds.
 func (m *Manager) watchForResume() {
 	// Round(0) strips the monotonic reading — with it, Sub answers in monotonic time and
 	// a suspend is invisible by construction, which is the very thing being measured.
 	last := time.Now().Round(0)
+	owed := map[*Session]int{}      // session → dials already failed
+	due := map[*Session]time.Time{} // session → when the next one is owed
 	for {
 		time.Sleep(SLEEP_TICK)
 		now := time.Now().Round(0)
 		slept := now.Sub(last)
 		woke := hostSlept(last, now)
 		last = now
-		if !woke {
-			continue
-		}
+
 		m.mu.RLock()
 		sessions := make([]*Session, 0, len(m.sessions))
 		for _, s := range m.sessions {
@@ -255,15 +281,48 @@ func (m *Manager) watchForResume() {
 		}
 		m.mu.RUnlock()
 
-		m.log.Infof("Host slept ~%s — redialling %d session(s)", slept.Round(time.Second), len(sessions))
-		for _, session := range sessions {
-			if session.Address == "" {
-				continue // still pairing: its socket is the pairing one, and dying is its signal
+		if woke {
+			m.log.Infof("Host slept ~%s — redialling %d session(s)", slept.Round(time.Second), len(sessions))
+			for _, session := range sessions {
+				if session.Address == "" {
+					continue // still pairing: its socket is the pairing one, and dying is its signal
+				}
+				session.Client.Disconnect()
+				owed[session], due[session] = 0, now // dead socket: one is owed right now
 			}
-			session.Client.Disconnect()
+		}
+
+		live := make(map[*Session]bool, len(sessions))
+		for _, s := range sessions {
+			live[s] = true
+		}
+		for session, at := range due {
+			if !live[session] { // logged out while it owed us a dial — nobody to pay
+				delete(due, session)
+				delete(owed, session)
+				continue
+			}
+			if now.Before(at) {
+				continue
+			}
+			if session.Client.IsConnected() { // whatsmeow got there first
+				delete(due, session)
+				delete(owed, session)
+				continue
+			}
 			if err := session.Client.Connect(); err != nil {
-				m.log.Errorf("Redial %s after sleep failed: %v", session.Address, err)
+				wait := redialWait(owed[session])
+				owed[session]++
+				due[session] = now.Add(wait)
+				m.log.Errorf("Redial %s failed (attempt %d): %v — again in %s",
+					session.Address, owed[session], err, wait)
+				continue
 			}
+			if owed[session] > 0 {
+				m.log.Infof("Redial %s took, after %d failed", session.Address, owed[session])
+			}
+			delete(due, session)
+			delete(owed, session)
 		}
 	}
 }

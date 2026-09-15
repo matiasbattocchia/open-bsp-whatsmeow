@@ -199,6 +199,26 @@ func TestHostSleptReadsTheWallClockGap(t *testing.T) {
 	}
 }
 
+// The first rungs are short because the usual failure is a lid — awake before the wifi is —
+// and the last is a ceiling, not an ending: a session that cannot dial keeps being offered
+// one every five minutes rather than staying deaf until someone restarts the bridge.
+func TestRedialWait(t *testing.T) {
+	if first := redialWait(0); first != 10*time.Second {
+		t.Errorf("the first retry waits %s, want 10s", first)
+	}
+	for failed := 1; failed < len(REDIAL_BACKOFF); failed++ {
+		if redialWait(failed) <= redialWait(failed-1) {
+			t.Errorf("rung %d (%s) does not back off from %s", failed, redialWait(failed), redialWait(failed-1))
+		}
+	}
+	ceiling := REDIAL_BACKOFF[len(REDIAL_BACKOFF)-1]
+	for _, failed := range []int{len(REDIAL_BACKOFF), 100, 10_000} {
+		if got := redialWait(failed); got != ceiling {
+			t.Errorf("after %d failures the wait is %s, want the ceiling %s", failed, got, ceiling)
+		}
+	}
+}
+
 // A queue drained after downtime is ONE arrival: held while it drains, handed back whole
 // and in order, and nothing held once it has been handed over. Posted message by message
 // instead, a backlog reads to the consumer as a conversation happening now.
