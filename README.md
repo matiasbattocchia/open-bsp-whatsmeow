@@ -78,6 +78,13 @@ services:
 - `POST /dispatch` — called by `whatsapp-web-dispatcher`;
   `{type: "message"|"status", record, media_url?}` → `{external_id, status}`.
   4xx = permanent failure, 5xx = transient (retried by OpenBSP's cron).
+  `{type: "contact", record, contact: {name, remove}}` writes the address
+  book: the record's `conversation_address` is the person, `name` what they
+  are saved as (empty ⇒ the name the wire knows them by), `remove` takes the
+  entry out. Answers `{status: "sent", name}` once WhatsApp has the patch —
+  the name it carried, so a nameless save says what it settled on. The book
+  itself stays WhatsApp's: what the consumer sees of it is `sender_saved` on
+  every later message from that person.
 - `POST /sessions` — `{organization_id, phone_number?, agent_id?, webhook_url?}` →
   `{session_id, status: "pending", qr_code?}` or `{..., pairing_code?}`.
   `webhook_url` is where THIS session's traffic (webhook batches, media

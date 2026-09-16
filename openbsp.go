@@ -121,9 +121,14 @@ type WebhookMessage struct {
 	// A consumer keeping its own contact entity (the contacts/groups feeds
 	// below) can ignore these; one without a directory needs them, since
 	// the pushname is otherwise knowable only while the sender is speaking.
-	SenderName       string         `json:"sender_name,omitempty"`
-	ConversationName string         `json:"conversation_name,omitempty"`
-	Content          MessageContent `json:"content"`
+	SenderName       string `json:"sender_name,omitempty"`
+	ConversationName string `json:"conversation_name,omitempty"`
+	// SenderName came from the account's address book — the ACCOUNT's word for
+	// the author, not the author's own. A pushname or a business name is the
+	// sender's to choose; a saved name is the principal's, and the consumer
+	// renders whose word it reads.
+	SenderSaved bool           `json:"sender_saved,omitempty"`
+	Content     MessageContent `json:"content"`
 	// Omitted for live messages (arms OpenBSP automation via the pending
 	// default); explicit for history/echoes so they stay inert.
 	Status    map[string]any `json:"status,omitempty"`
@@ -144,6 +149,8 @@ type WebhookStatus struct {
 	Status              map[string]any `json:"status"`
 }
 
+// WebhookContact is a pushname courtesy: the name a person goes by on the
+// wire, a cache hint for a consumer that keeps one.
 type WebhookContact struct {
 	Address string         `json:"address"`
 	Extra   map[string]any `json:"extra,omitempty"`

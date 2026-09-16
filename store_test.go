@@ -121,17 +121,31 @@ func TestContactNameReadsTheStore(t *testing.T) {
 	}
 
 	session := &Session{Client: whatsmeow.NewClient(device, waLog.Noop), Address: own.User}
-	if got := contactName(session, peer.User, "gv"); got != "Gianvito Sobisch" {
-		t.Errorf("contactName = %q, want the address-book name", got)
+	if got, saved := contactName(session, peer.User, "gv"); got != "Gianvito Sobisch" || !saved {
+		t.Errorf("contactName = %q/%v, want the address-book name, saved", got, saved)
 	}
 	// nobody by that number: the live pushname is all there is, and a total
 	// miss must stay empty so the consumer falls back to the address
-	if got := contactName(session, "5490000000000", "sol tru"); got != "sol tru" {
-		t.Errorf("contactName(unknown) = %q, want the live pushname", got)
+	if got, saved := contactName(session, "5490000000000", "sol tru"); got != "sol tru" || saved {
+		t.Errorf("contactName(unknown) = %q/%v, want the live pushname, unsaved", got, saved)
 	}
-	if got := contactName(session, "5490000000000", ""); got != "" {
+	if got, _ := contactName(session, "5490000000000", ""); got != "" {
 		t.Errorf("contactName(unknown, no pushname) = %q, want empty", got)
 	}
+	// a nameless save asks the store for the wire's word — and the address book is
+	// not that word, so a saved-only contact is saved under none
+	if got := wireName(mustContact(t, session, peer)); got != "" {
+		t.Errorf("wireName over an address-book-only entry = %q, want empty", got)
+	}
+}
+
+func mustContact(t *testing.T, session *Session, jid types.JID) types.ContactInfo {
+	t.Helper()
+	contact, err := session.Client.Store.Contacts.GetContact(context.Background(), jid)
+	if err != nil {
+		t.Fatalf("GetContact: %v", err)
+	}
+	return contact
 }
 
 // A mute is a deadline: "8 hours" stores a timestamp, "always" the far-future

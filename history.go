@@ -119,10 +119,10 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			if parsed.Info.IsFromMe {
 				message.SenderName = ownName(session)
 			} else {
-				message.SenderName = contactName(session, message.SenderAddress, parsed.Info.PushName)
+				message.SenderName, message.SenderSaved = contactName(session, message.SenderAddress, parsed.Info.PushName)
 			}
 			if !parsed.Info.IsGroup {
-				message.ConversationName = contactName(session, message.ConversationAddress, "")
+				message.ConversationName, _ = contactName(session, message.ConversationAddress, "")
 			} else if name := conversation.GetName(); name != "" {
 				message.ConversationName = name
 			}

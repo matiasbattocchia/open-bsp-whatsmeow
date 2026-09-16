@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -94,7 +95,7 @@ func sendErrorStatus(err error) int {
 // a "message" forwards an outgoing MessageRow verbatim; a "status" forwards
 // an incoming row whose read/typing status changed.
 type dispatchRequest struct {
-	Type   string `json:"type"` // message | status
+	Type   string `json:"type"` // message | status | contact
 	Record struct {
 		ID                  string         `json:"id"`
 		ExternalID          string         `json:"external_id"`
@@ -109,6 +110,14 @@ type dispatchRequest struct {
 	// the one this bridge already delivers to, so it never has to state its
 	// host to us twice.
 	MediaURL string `json:"media_url"`
+	// The address-book write, for type "contact": the chat is the person
+	// (conversation_address, a direct chat), Name what they are saved as —
+	// empty saves them under the name the wire knows them by, or under none
+	// — and Remove takes the entry out instead.
+	Contact *struct {
+		Name   string `json:"name"`
+		Remove bool   `json:"remove"`
+	} `json:"contact"`
 }
 
 // Response codes follow the dispatcher's transient/permanent split:
@@ -210,9 +219,50 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 		writeJSON(w, map[string]any{})
 
+	case "contact":
+		// The address book's write side: one app-state patch, the same one a
+		// linked WhatsApp Web writes. The answer is that WhatsApp took the
+		// patch; the entry itself comes back through the app-state echo, as
+		// a contact fact on the webhook, the way every other change does.
+		name, status, err := buildContact(session, chat, req)
+		if err != nil {
+			http.Error(w, err.Error(), status)
+			return
+		}
+		patch := appstate.BuildContact(chat.ToNonAD(), name, !req.Contact.Remove)
+		if err := session.Client.SendAppState(r.Context(), patch); err != nil {
+			http.Error(w, err.Error(), sendErrorStatus(err))
+			return
+		}
+		writeJSON(w, map[string]any{"status": "sent", "name": name})
+
 	default:
 		http.Error(w, "unknown dispatch type "+req.Type, http.StatusUnprocessableEntity)
 	}
+}
+
+// buildContact settles what a contact write says before it is sent: the
+// target must be a person (a group has no entry), and a save with no name
+// takes the wire's own word for them — pushname, else storefront — so the
+// entry is never an anonymous number when the wire knows better. The
+// answered name is the one the patch carries.
+func buildContact(session *Session, chat types.JID, req dispatchRequest) (string, int, error) {
+	if req.Contact == nil {
+		return "", http.StatusUnprocessableEntity, fmt.Errorf("contact dispatch carries no contact")
+	}
+	if chat.Server != types.DefaultUserServer && chat.Server != types.HiddenUserServer {
+		return "", http.StatusUnprocessableEntity, fmt.Errorf("%s is not a person — only a direct chat has an address-book entry", chat)
+	}
+	if req.Contact.Remove {
+		return "", 0, nil
+	}
+	name := strings.TrimSpace(req.Contact.Name)
+	if name == "" && session.Client != nil && session.Client.Store != nil && session.Client.Store.Contacts != nil {
+		if contact, err := session.Client.Store.Contacts.GetContact(context.Background(), chat.ToNonAD()); err == nil {
+			name = wireName(contact)
+		}
+	}
+	return name, 0, nil
 }
 
 // referencedKey reconstructs the WhatsApp MessageKey pieces of a referenced

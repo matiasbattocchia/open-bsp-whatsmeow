@@ -62,6 +62,7 @@ type Session struct {
 	// decides which namespace an outbound mention must speak.
 	addrMu   sync.Mutex
 	addrMode map[string]types.AddressingMode
+
 }
 
 // noteAddressingMode records what namespace a chat addresses people in.

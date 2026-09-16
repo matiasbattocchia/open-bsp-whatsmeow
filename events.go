@@ -170,11 +170,27 @@ func senderAddressFor(session *Session, source types.MessageSource) string {
 // FirstName are what the ACCOUNT named this contact, PushName only what the
 // contact calls itself, and BusinessName the storefront it trades under. The
 // live event's own pushname (`live`) beats the stored one — same fact, fresher
-// — but never the account's own naming.
-func pickName(contact types.ContactInfo, live string) string {
-	for _, candidate := range []string{
-		contact.FullName, contact.FirstName, live, contact.PushName, contact.BusinessName,
-	} {
+// — but never the account's own naming. `saved` says the pick was the
+// account's word: the consumer renders whose word a name is.
+func pickName(contact types.ContactInfo, live string) (name string, saved bool) {
+	for _, candidate := range []string{contact.FullName, contact.FirstName} {
+		if name := strings.TrimSpace(candidate); name != "" {
+			return name, true
+		}
+	}
+	for _, candidate := range []string{live, contact.PushName, contact.BusinessName} {
+		if name := strings.TrimSpace(candidate); name != "" {
+			return name, false
+		}
+	}
+	return "", false
+}
+
+// wireName is what somebody calls themselves as far as the wire knows: the
+// pushname, else the storefront. What a contact is saved under when the
+// consumer names nobody.
+func wireName(contact types.ContactInfo) string {
+	for _, candidate := range []string{contact.PushName, contact.BusinessName} {
 		if name := strings.TrimSpace(candidate); name != "" {
 			return name
 		}
@@ -200,15 +216,15 @@ func ownName(session *Session) string {
 // contactName is pickName over the contact store, keyed by canonical digits.
 // A miss is not an error: plenty of numbers are in no address book, and the
 // consumer's fallback is the address itself.
-func contactName(session *Session, user, live string) string {
+func contactName(session *Session, user, live string) (name string, saved bool) {
 	if user == "" {
-		return strings.TrimSpace(live)
+		return strings.TrimSpace(live), false
 	}
 	contact, err := session.Client.Store.Contacts.GetContact(
 		context.Background(), types.NewJID(user, types.DefaultUserServer),
 	)
 	if err != nil {
-		return strings.TrimSpace(live)
+		return strings.TrimSpace(live), false
 	}
 	return pickName(contact, live)
 }
@@ -806,14 +822,14 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		message.SenderName = ownName(session)
 	} else {
 		live = evt.Info.PushName
-		message.SenderName = contactName(session, message.SenderAddress, live)
+		message.SenderName, message.SenderSaved = contactName(session, message.SenderAddress, live)
 	}
 	if evt.Info.IsGroup {
 		message.ConversationName = session.groupName(chat.String())
 	} else {
 		// A direct chat IS its peer, so the peer's name names the room — the
 		// only name a DM will ever have (WhatsApp has no subject for one).
-		message.ConversationName = contactName(session, message.ConversationAddress, live)
+		message.ConversationName, _ = contactName(session, message.ConversationAddress, live)
 	}
 
 	if mediaErr != nil {

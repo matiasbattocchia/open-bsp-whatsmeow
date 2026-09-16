@@ -62,24 +62,69 @@ func TestEditRefusesEmptyText(t *testing.T) {
 
 // Who a contact IS, in the order the account would answer: the name it wrote in
 // its own address book beats what the contact calls itself, and the live event's
-// pushname beats the stored copy of the same fact.
+// pushname beats the stored copy of the same fact. Whose word the pick was rides
+// with it: only the address book's is the account's own.
 func TestPickNamePrefersTheAddressBook(t *testing.T) {
 	cases := []struct {
 		name    string
 		contact types.ContactInfo
 		live    string
 		want    string
+		saved   bool
 	}{
-		{"address book wins", types.ContactInfo{FullName: "Gianvito", PushName: "gv 🇮🇹"}, "gv 🇮🇹", "Gianvito"},
-		{"first name when that is all there is", types.ContactInfo{FirstName: "Ana", PushName: "any"}, "", "Ana"},
-		{"live pushname beats the stored one", types.ContactInfo{PushName: "old"}, "new", "new"},
-		{"business name is the last resort", types.ContactInfo{BusinessName: "Ferretería"}, "", "Ferretería"},
-		{"blank is blank — the consumer falls back to the address", types.ContactInfo{}, "   ", ""},
+		{"address book wins", types.ContactInfo{FullName: "Gianvito", PushName: "gv 🇮🇹"}, "gv 🇮🇹", "Gianvito", true},
+		{"first name when that is all there is", types.ContactInfo{FirstName: "Ana", PushName: "any"}, "", "Ana", true},
+		{"live pushname beats the stored one", types.ContactInfo{PushName: "old"}, "new", "new", false},
+		{"business name is the last resort", types.ContactInfo{BusinessName: "Ferretería"}, "", "Ferretería", false},
+		{"blank is blank — the consumer falls back to the address", types.ContactInfo{}, "   ", "", false},
 	}
 	for _, c := range cases {
-		if got := pickName(c.contact, c.live); got != c.want {
-			t.Errorf("%s: pickName = %q, want %q", c.name, got, c.want)
+		got, saved := pickName(c.contact, c.live)
+		if got != c.want || saved != c.saved {
+			t.Errorf("%s: pickName = %q/%v, want %q/%v", c.name, got, saved, c.want, c.saved)
 		}
+	}
+}
+
+// A contact write names a person, and a save that names nobody takes the wire's own
+// word: the entry the phone gets is what the contact calls themselves, never a bare
+// number when a name was there to use. A group has no entry to write.
+func TestBuildContactSettlesTheName(t *testing.T) {
+	session := &Session{Address: "5491100000000"}
+	person := types.NewJID("5491199999999", types.DefaultUserServer)
+	group := types.NewJID("120363429869958481", types.GroupServer)
+
+	req := func(name string, remove bool) dispatchRequest {
+		var r dispatchRequest
+		r.Type = "contact"
+		r.Contact = &struct {
+			Name   string `json:"name"`
+			Remove bool   `json:"remove"`
+		}{Name: name, Remove: remove}
+		return r
+	}
+
+	if name, _, err := buildContact(session, person, req("  Dra. Soledad  ", false)); err != nil || name != "Dra. Soledad" {
+		t.Errorf("named save: %q, %v", name, err)
+	}
+	if name, _, err := buildContact(session, person, req("ignored", true)); err != nil || name != "" {
+		t.Errorf("remove carries no name: %q, %v", name, err)
+	}
+	if _, status, err := buildContact(session, group, req("x", false)); err == nil || status != http.StatusUnprocessableEntity {
+		t.Errorf("a group is refused as permanent: status %d, err %v", status, err)
+	}
+	if _, status, err := buildContact(session, person, dispatchRequest{Type: "contact"}); err == nil || status != http.StatusUnprocessableEntity {
+		t.Errorf("a contact dispatch without a contact is refused: status %d, err %v", status, err)
+	}
+	// nameless, with no store to ask: saved under none — the honest nothing
+	if name, _, err := buildContact(session, person, req("", false)); err != nil || name != "" {
+		t.Errorf("nameless save without a store: %q, %v", name, err)
+	}
+	if got := wireName(types.ContactInfo{PushName: " gv ", BusinessName: "Ferretería"}); got != "gv" {
+		t.Errorf("wireName prefers the pushname: %q", got)
+	}
+	if got := wireName(types.ContactInfo{FullName: "Gianvito", BusinessName: "Ferretería"}); got != "Ferretería" {
+		t.Errorf("wireName never answers the address book: %q", got)
 	}
 }
 
