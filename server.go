@@ -34,16 +34,24 @@ func NewServer(cfg *Config, manager *Manager, log waLog.Logger) *Server {
 	return &Server{cfg: cfg, manager: manager, log: log}
 }
 
-func (s *Server) ListenAndServe() error {
+// routes is the whole HTTP surface. The address book sits at its own root
+// because a pattern under /sessions/{address}/ overlaps /sessions/pending/{id}
+// on the path "/sessions/pending/<leaf>", and the mux refuses to register two
+// patterns neither of which is the more specific.
+func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /dispatch", s.auth(s.handleDispatch))
 	mux.HandleFunc("POST /sessions", s.auth(s.handleCreateSession))
 	mux.HandleFunc("GET /sessions/pending/{id}", s.auth(s.handlePendingState))
 	mux.HandleFunc("GET /sessions/{address}", s.auth(s.handleSessionStatus))
 	mux.HandleFunc("DELETE /sessions/{address}", s.auth(s.handleLogout))
+	mux.HandleFunc("GET /contacts/{address}", s.auth(s.handleContacts))
+	return mux
+}
 
+func (s *Server) ListenAndServe() error {
 	s.log.Infof("Listening on %s", s.cfg.ListenAddr)
-	return http.ListenAndServe(s.cfg.ListenAddr, mux)
+	return http.ListenAndServe(s.cfg.ListenAddr, s.routes())
 }
 
 func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
@@ -222,8 +230,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	case "contact":
 		// The address book's write side: one app-state patch, the same one a
 		// linked WhatsApp Web writes. The answer is that WhatsApp took the
-		// patch; the entry itself comes back through the app-state echo, as
-		// a contact fact on the webhook, the way every other change does.
+		// patch, carrying the name it went out under; the entry itself lives
+		// in the account's book, which GET /contacts/{address} reads
+		// and every later message carries the name of.
 		name, status, err := buildContact(session, chat, req)
 		if err != nil {
 			http.Error(w, err.Error(), status)
@@ -827,6 +836,103 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, status)
 }
+
+// handleContacts reads the account's address book — the read side of the
+// same book "contact" dispatch writes. A query is required and the answer is
+// the entries that match it: this is a lookup, never a dump of everybody the
+// account has ever heard from.
+//
+// What counts as an entry is what the consumer sees as `sender_saved`: a name
+// the ACCOUNT gave (FullName, FirstName), which is what app state carries
+// between a person's devices. Somebody who only ever supplied a pushname is
+// known to the wire, not saved in the book, and stays out of the answer.
+//
+// A query matches a name case-insensitively on a substring, the way a person
+// searches their own phone; digits match the address, so a number nobody has
+// written to still finds whoever it is saved as.
+//
+// The store keys an entry by whichever JID app state carried it under, phone
+// or LID; the address answered is the canonical one every other address the
+// bridge emits is in, so a caller can write to it. One person saved under
+// both keys is one entry.
+func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
+	session := s.manager.Get(r.PathValue("address"))
+	if session == nil {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	if query == "" {
+		http.Error(w, "a contact lookup needs a query", http.StatusUnprocessableEntity)
+		return
+	}
+	if session.Client == nil || session.Client.Store == nil || session.Client.Store.Contacts == nil {
+		http.Error(w, "session keeps no address book", http.StatusServiceUnavailable)
+		return
+	}
+	book, err := session.Client.Store.Contacts.GetAllContacts(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	digits := digitsOf(query)
+	folded := strings.ToLower(query)
+	entries := map[string]WebhookContact{}
+	for jid, info := range book {
+		name, saved := pickName(info, "")
+		if !saved {
+			continue
+		}
+		address := canonicalUser(session, jid.ToNonAD(), types.JID{})
+		if !strings.Contains(strings.ToLower(name), folded) &&
+			!(digits != "" && strings.Contains(address, digits)) {
+			continue
+		}
+		if _, dup := entries[address]; !dup {
+			entries[address] = WebhookContact{
+				Address: address,
+				Extra:   map[string]any{"name": name},
+			}
+		}
+	}
+	found := make([]WebhookContact, 0, len(entries))
+	for _, entry := range entries {
+		found = append(found, entry)
+	}
+	// a map ranges in no order, and a truncated page has to be the same one
+	// twice: the name is what a reader is scanning, so it is what orders them
+	sort.Slice(found, func(i, j int) bool {
+		if a, b := nameOf(found[i]), nameOf(found[j]); a != b {
+			return a < b
+		}
+		return found[i].Address < found[j].Address
+	})
+	writeJSON(w, map[string]any{"contacts": found[:min(len(found), contactLimit)]})
+}
+
+// nameOf reads the name back off an entry the lookup just built.
+func nameOf(entry WebhookContact) string {
+	name, _ := entry.Extra["name"].(string)
+	return name
+}
+
+// digitsOf keeps only the digits of a query, so `+54 9 261 610-4507` and the
+// address `5492616104507` are the same needle. A query with no digits yields
+// "", which never matches an address.
+func digitsOf(query string) string {
+	var out strings.Builder
+	for _, r := range query {
+		if r >= '0' && r <= '9' {
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+// contactLimit is the most entries one lookup answers. A person's book runs to
+// thousands; what a reader can use is the first handful of matches, and a
+// query that names nobody in particular is meant to come back short.
+const contactLimit = 25
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if err := s.manager.Logout(r.Context(), r.PathValue("address")); err != nil {

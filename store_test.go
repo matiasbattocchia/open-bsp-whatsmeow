@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"testing"
 	"time"
@@ -171,5 +175,107 @@ func TestMarksOfReadsTheDeadline(t *testing.T) {
 		if muted != c.muted || archived != c.archived {
 			t.Errorf("%s: marksOf = (%v, %v), want (%v, %v)", c.name, muted, archived, c.muted, c.archived)
 		}
+	}
+}
+
+// The address book's READ side over HTTP: a lookup answers the entries the
+// ACCOUNT named and nobody else, which is the same line `sender_saved` draws
+// on every message. Worth an end-to-end test because the filter is the whole
+// endpoint — a lookup that leaks pushnames would read to a caller as an
+// address book that has people in it who were never saved.
+func TestContactsLookupAnswersTheBook(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenStore(ctx, "file:"+filepath.Join(t.TempDir(), "bridge.db"), waLog.Noop)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer st.DB.Close()
+
+	device := st.Container.NewDevice()
+	own := types.JID{User: "5491100000000", Device: 17, Server: types.DefaultUserServer}
+	device.ID = &own
+	device.Account = &waAdv.ADVSignedDeviceIdentity{
+		Details:             []byte{0x01},
+		AccountSignature:    make([]byte, 64),
+		AccountSignatureKey: make([]byte, 32),
+		DeviceSignature:     make([]byte, 64),
+	}
+	if err := st.Container.PutDevice(ctx, device); err != nil {
+		t.Fatalf("PutDevice: %v", err)
+	}
+	saved := types.NewJID("5492616104507", types.DefaultUserServer)
+	if err := device.Contacts.PutContactName(ctx, saved, "Verónica Sesto", ""); err != nil {
+		t.Fatalf("PutContactName: %v", err)
+	}
+	other := types.NewJID("5491155512345", types.DefaultUserServer)
+	if err := device.Contacts.PutContactName(ctx, other, "Verónica Paz", ""); err != nil {
+		t.Fatalf("PutContactName: %v", err)
+	}
+	// known to the wire, never saved: the endpoint must not answer with them
+	stranger := types.NewJID("15613518605", types.DefaultUserServer)
+	if _, _, err := device.Contacts.PutPushName(ctx, stranger, "Verónica the stranger"); err != nil {
+		t.Fatalf("PutPushName: %v", err)
+	}
+	// saved under a LID the store can map: answered by phone, and once — the
+	// same person is also saved under that phone
+	lid := types.NewJID("102030405060708", types.HiddenUserServer)
+	if err := device.LIDs.PutLIDMapping(ctx, lid, saved); err != nil {
+		t.Fatalf("PutLIDMapping: %v", err)
+	}
+	if err := device.Contacts.PutContactName(ctx, lid, "Verónica Sesto", ""); err != nil {
+		t.Fatalf("PutContactName(lid): %v", err)
+	}
+
+	manager := NewManager(st, nil, waLog.Noop)
+	session := &Session{Client: whatsmeow.NewClient(device, waLog.Noop), Address: own.User}
+	manager.sessions[session.Address] = session
+	server := NewServer(&Config{}, manager, waLog.Noop)
+
+	// through the real route table, so the pattern is exercised along with the
+	// handler: a bearer that matches the (empty) token, the path as a caller
+	// writes it
+	mux := server.routes()
+	ask := func(query string) (int, []WebhookContact) {
+		req := httptest.NewRequest(http.MethodGet, "/contacts/"+own.User+"?q="+url.QueryEscape(query), nil)
+		req.Header.Set("Authorization", "Bearer ")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var body struct {
+			Contacts []WebhookContact `json:"contacts"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body.Contacts
+	}
+
+	code, found := ask("verónica")
+	if code != http.StatusOK {
+		t.Fatalf("lookup: HTTP %d", code)
+	}
+	// both saved Verónicas, sorted by name; the pushname-only one stays out
+	if len(found) != 2 {
+		t.Fatalf("lookup(verónica) = %d entries, want the 2 saved ones: %+v", len(found), found)
+	}
+	if nameOf(found[0]) != "Verónica Paz" || found[0].Address != other.User {
+		t.Errorf("first hit = %q/%s, want Verónica Paz", nameOf(found[0]), found[0].Address)
+	}
+	if nameOf(found[1]) != "Verónica Sesto" || found[1].Address != saved.User {
+		t.Errorf("second hit = %q/%s, want Verónica Sesto", nameOf(found[1]), found[1].Address)
+	}
+
+	// a number as written by hand finds whoever wears it
+	if _, found := ask("+54 9 261 610-4507"); len(found) != 1 || found[0].Address != saved.User {
+		t.Errorf("lookup by number = %+v, want the one entry", found)
+	}
+	if _, found := ask("nobody at all"); len(found) != 0 {
+		t.Errorf("lookup(miss) = %+v, want none", found)
+	}
+
+	// a lookup is a lookup: no query, no dump
+	req := httptest.NewRequest(http.MethodGet, "/contacts/"+own.User, nil)
+	req.Header.Set("Authorization", "Bearer ")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("queryless lookup = HTTP %d, want 422", rec.Code)
 	}
 }

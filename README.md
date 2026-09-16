@@ -94,6 +94,14 @@ services:
   rotate ~20s): `{session_id, status: pending|paired|error, qr_code?,
   pairing_code?, address?, error?}`.
 - `GET /sessions/{address}` — `{address, connected, logged_in}`.
+- `GET /contacts/{address}?q=…` — the address book's read side:
+  `{contacts: [{address, extra: {name}}]}`, the entries matching `q`. A name
+  matches case-insensitively on a substring and digits match the address, so
+  `+54 9 261 610-4507` finds whoever wears that number. Only entries the
+  ACCOUNT named are answered — the same ones `sender_saved` marks a message
+  with — so somebody known to the wire by pushname alone is not in the book.
+  `q` is required (422 without it) and 25 entries is the most one lookup
+  answers: this is a lookup, not a dump.
 - `DELETE /sessions/{address}` — logout + delete device.
 
 ## Status / TODO (v0)
