@@ -262,6 +262,18 @@ func TestContactsLookupAnswersTheBook(t *testing.T) {
 		t.Errorf("second hit = %q/%s, want Verónica Sesto", nameOf(found[1]), found[1].Address)
 	}
 
+	// the consumer's name rule: case and accents folded, words in any order — the
+	// calendar's `APELLIDO NOMBRE` finds the phone's `Nombre Apellido`
+	if _, found := ask("SESTO VERONICA"); len(found) != 1 || found[0].Address != saved.User {
+		t.Errorf("lookup(SESTO VERONICA) = %+v, want Verónica Sesto alone", found)
+	}
+	if _, found := ask("veronica paz"); len(found) != 1 || found[0].Address != other.User {
+		t.Errorf("lookup(veronica paz) = %+v, want Verónica Paz alone", found)
+	}
+	if _, found := ask("Verónica Mori"); len(found) != 0 {
+		t.Errorf("lookup(Verónica Mori) = %+v, want none: one word of two is a miss", found)
+	}
+
 	// a number as written by hand finds whoever wears it
 	if _, found := ask("+54 9 261 610-4507"); len(found) != 1 || found[0].Address != saved.User {
 		t.Errorf("lookup by number = %+v, want the one entry", found)

@@ -12,12 +12,14 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"golang.org/x/text/unicode/norm"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -847,9 +849,13 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 // between a person's devices. Somebody who only ever supplied a pushname is
 // known to the wire, not saved in the book, and stays out of the answer.
 //
-// A query matches a name case-insensitively on a substring, the way a person
-// searches their own phone; digits match the address, so a number nobody has
-// written to still finds whoever it is saved as.
+// A query matches a name by the consumer's own name rule (liquen's
+// `store/names.ts`, the same three lines): case and accents folded, and every
+// word of the query found somewhere in the name, in any order — so the
+// calendar's `REVECO EDGARDO` finds the phone's `Edgardo Reveco`, and one word
+// still matches on a substring, the way a person searches their own phone.
+// Digits match the address, so a number nobody has written to still finds
+// whoever it is saved as.
 //
 // The store keys an entry by whichever JID app state carried it under, phone
 // or LID; the address answered is the canonical one every other address the
@@ -876,7 +882,7 @@ func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	digits := digitsOf(query)
-	folded := strings.ToLower(query)
+	words := nameWords(query)
 	entries := map[string]WebhookContact{}
 	for jid, info := range book {
 		name, saved := pickName(info, "")
@@ -884,7 +890,7 @@ func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		address := canonicalUser(session, jid.ToNonAD(), types.JID{})
-		if !strings.Contains(strings.ToLower(name), folded) &&
+		if !namesMatch(words, name) &&
 			!(digits != "" && strings.Contains(address, digits)) {
 			continue
 		}
@@ -914,6 +920,43 @@ func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
 func nameOf(entry WebhookContact) string {
 	name, _ := entry.Extra["name"].(string)
 	return name
+}
+
+// foldName is the comparable form of a name: accents stripped (NFD, marks
+// dropped), lower case, whitespace collapsed — `Álvaro` and `ALVARO` are one
+// needle.
+func foldName(s string) string {
+	var out strings.Builder
+	for _, r := range norm.NFD.String(s) {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		out.WriteRune(unicode.ToLower(r))
+	}
+	return strings.Join(strings.Fields(out.String()), " ")
+}
+
+// nameWords splits a query into its folded words, punctuation aside: what each
+// has to be found in a name.
+func nameWords(query string) []string {
+	return strings.FieldsFunc(foldName(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+}
+
+// namesMatch: every word of the query, in any order, as a substring of the
+// folded name. No word names nobody.
+func namesMatch(words []string, name string) bool {
+	if len(words) == 0 {
+		return false
+	}
+	folded := foldName(name)
+	for _, w := range words {
+		if !strings.Contains(folded, w) {
+			return false
+		}
+	}
+	return true
 }
 
 // digitsOf keeps only the digits of a query, so `+54 9 261 610-4507` and the
