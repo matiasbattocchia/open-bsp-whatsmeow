@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 // A group route acts on a group and nothing else: a person's JID or a bare
@@ -171,5 +173,87 @@ func TestRosterOfIsCanonical(t *testing.T) {
 		if view.Members[i] != want[i] {
 			t.Errorf("seat %d: got %+v, want %+v", i, view.Members[i], want[i])
 		}
+	}
+}
+
+// A roster change reads as the consumer reads people: who joined, who left,
+// who did it. A change the consumer keeps no line for is not posted.
+func TestGroupChange(t *testing.T) {
+	group := types.NewJID("120363001234567890", types.GroupServer)
+	ana := types.NewJID("5491100000001", types.DefaultUserServer)
+	bea := types.NewJID("5491100000002", types.DefaultUserServer)
+	at := time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC)
+
+	change, ok := groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Sender: &ana, Timestamp: at,
+		Join: []types.JID{bea},
+	})
+	if !ok || change.Address != "120363001234567890@g.us" || change.Timestamp != "2026-09-28T12:00:00Z" {
+		t.Fatalf("an add: %+v %v", change, ok)
+	}
+	if len(change.Joined) != 1 || change.Joined[0].Address != "5491100000002" || len(change.Left) != 0 {
+		t.Errorf("joined: %+v", change)
+	}
+	if change.By == nil || change.By.Address != "5491100000001" || change.Reason != "" {
+		t.Errorf("by: %+v", change.By)
+	}
+
+	change, ok = groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Timestamp: at, JoinReason: "invite", Join: []types.JID{bea},
+	})
+	if !ok || change.By != nil || change.Reason != "invite" {
+		t.Errorf("a join by the link: %+v", change)
+	}
+
+	change, ok = groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Sender: &ana, Timestamp: at, Leave: []types.JID{bea},
+	})
+	if !ok || len(change.Left) != 1 || change.Left[0].Address != "5491100000002" {
+		t.Errorf("a removal: %+v", change)
+	}
+
+	change, ok = groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Sender: &ana, Timestamp: at, Name: &types.GroupName{Name: "ops"},
+	})
+	if !ok || change.Name != "ops" || change.By != nil || len(change.Joined) != 0 {
+		t.Errorf("a rename is the subject alone: %+v", change)
+	}
+
+	if _, ok := groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Sender: &ana, Timestamp: at, Promote: []types.JID{bea},
+		Topic: &types.GroupTopic{Topic: "about"},
+	}); ok {
+		t.Error("an admin seat or a description is no line")
+	}
+}
+
+// The account's own arrival: a new group arrives with its founding roster and
+// its creator; an existing one with the account alone.
+func TestJoinedGroup(t *testing.T) {
+	group := types.NewJID("120363001234567890", types.GroupServer)
+	ana := types.NewJID("5491100000001", types.DefaultUserServer)
+	own := types.NewJID("5491100000009", types.DefaultUserServer)
+	session := &Session{Address: "5491100000009"}
+
+	info := types.GroupInfo{
+		JID:          group,
+		GroupName:    types.GroupName{Name: "ops"},
+		GroupCreated: time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC),
+		Participants: []types.GroupParticipant{{JID: ana}, {JID: own}},
+	}
+	change := joinedGroup(session, &events.JoinedGroup{Type: "new", Sender: &ana, GroupInfo: info})
+	if change.Name != "ops" || len(change.Joined) != 2 || change.By == nil ||
+		change.By.Address != "5491100000001" || change.Timestamp != "2026-09-28T12:00:00Z" {
+		t.Errorf("a new group: %+v", change)
+	}
+
+	change = joinedGroup(session, &events.JoinedGroup{Sender: &ana, GroupInfo: info})
+	if len(change.Joined) != 1 || change.Joined[0].Address != "5491100000009" || change.By == nil {
+		t.Errorf("added to a group: %+v", change)
+	}
+
+	change = joinedGroup(session, &events.JoinedGroup{Reason: "invite", GroupInfo: info})
+	if change.By != nil || change.Reason != "invite" || change.Joined[0].Address != "5491100000009" {
+		t.Errorf("in by the link: %+v", change)
 	}
 }

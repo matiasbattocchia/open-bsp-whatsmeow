@@ -87,22 +87,34 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 		m.handleReceipt(session, v)
 
 	case *events.GroupInfo:
-		if v.Name != nil {
-			batch := WebhookBatch{
-				OrganizationAddress: session.Address,
-				Groups: []WebhookGroup{
-					{Address: v.JID.String(), Name: v.Name.Name},
-				},
-			}
-			if err := session.receiver.PostBatch(batch); err != nil {
-				m.log.Errorf("Post group rename for %s failed: %v", v.JID, err)
-			}
+		if change, ok := groupChange(session, v); ok {
+			m.postGroupChange(session, change)
 		}
+
+	case *events.JoinedGroup:
+		m.postGroupChange(session, joinedGroup(session, v))
 
 	case *events.HistorySync:
 		// Runs in its own goroutine: a sync can carry thousands of messages
 		// and must not block the event loop.
 		go m.handleHistorySync(session, v)
+	}
+}
+
+// postGroupChange posts a group's change on the groups feed. A new subject is
+// kept first, so the messages after it carry the name it now has.
+func (m *Manager) postGroupChange(session *Session, change WebhookGroup) {
+	session.noteGroupName(change.Address, change.Name)
+	chat, err := types.ParseJID(change.Address)
+	if err == nil {
+		change.Muted, change.Archived = chatMarks(session, chat, time.Now())
+	}
+	batch := WebhookBatch{
+		OrganizationAddress: session.Address,
+		Groups:              []WebhookGroup{change},
+	}
+	if err := session.receiver.PostBatch(batch); err != nil {
+		m.log.Errorf("Post group change for %s failed: %v", change.Address, err)
 	}
 }
 

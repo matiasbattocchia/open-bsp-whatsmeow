@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 // The group routes: a consumer opens and changes the account's groups through
@@ -166,18 +168,93 @@ func participantFailures(session *Session, seats []types.GroupParticipant) []str
 func rosterOf(session *Session, info *types.GroupInfo) []groupMember {
 	members := make([]groupMember, 0, len(info.Participants))
 	for _, p := range info.Participants {
-		address := canonicalUser(session, p.JID, p.PhoneNumber)
-		name := ""
-		if session.Client != nil && session.Client.Store != nil && session.Client.Store.Contacts != nil {
-			name, _ = contactName(session, address, p.DisplayName)
-		}
-		members = append(members, groupMember{
-			Address: address,
-			Name:    name,
-			Admin:   p.IsAdmin || p.IsSuperAdmin,
-		})
+		member := personOf(session, p.JID, p.PhoneNumber, p.DisplayName)
+		member.Admin = p.IsAdmin || p.IsSuperAdmin
+		members = append(members, member)
 	}
 	return members
+}
+
+// personOf is one person as the consumer reads people: canonical digits and
+// the name the account has for them, none when the session keeps no book.
+func personOf(session *Session, jid, alt types.JID, live string) groupMember {
+	address := canonicalUser(session, jid, alt)
+	name := ""
+	if session.Client != nil && session.Client.Store != nil && session.Client.Store.Contacts != nil {
+		name, _ = contactName(session, address, live)
+	}
+	return groupMember{Address: address, Name: name}
+}
+
+// groupChange shapes a change WhatsApp announced for a group: the subject when
+// it moved, the roster when it moved. ok is false when neither did — a
+// description, a setting or an admin seat is not a line the consumer keeps.
+func groupChange(session *Session, v *events.GroupInfo) (change WebhookGroup, ok bool) {
+	change = WebhookGroup{Address: v.JID.String()}
+	if v.Name != nil {
+		change.Name = v.Name.Name
+	}
+	for _, jid := range v.Join {
+		change.Joined = append(change.Joined, personOf(session, jid, types.JID{}, ""))
+	}
+	for _, jid := range v.Leave {
+		change.Left = append(change.Left, personOf(session, jid, types.JID{}, ""))
+	}
+	if change.Name == "" && len(change.Joined) == 0 && len(change.Left) == 0 {
+		return change, false
+	}
+	if len(change.Joined) > 0 || len(change.Left) > 0 {
+		change.By = changedBy(session, v.Sender, v.SenderPN)
+		if v.JoinReason == "invite" {
+			change.Reason = "invite"
+		}
+	}
+	change.Timestamp = changedAt(v.Timestamp).Format(time.RFC3339)
+	return change, true
+}
+
+// joinedGroup shapes the account's own arrival in a group. A group made with
+// the account in it arrives whole — its founding roster joined, its creator
+// the one who did it; otherwise the account alone joined, added by the sender,
+// or by nobody when it came in by the group's link.
+func joinedGroup(session *Session, v *events.JoinedGroup) WebhookGroup {
+	change := WebhookGroup{Address: v.JID.String(), Name: v.Name}
+	at := time.Time{}
+	if v.Type == "new" {
+		change.Joined = rosterOf(session, &v.GroupInfo)
+		at = v.GroupCreated
+	}
+	if len(change.Joined) == 0 {
+		change.Joined = []groupMember{{Address: session.Address}}
+	}
+	change.By = changedBy(session, v.Sender, v.SenderPN)
+	if v.Reason == "invite" {
+		change.Reason = "invite"
+	}
+	change.Timestamp = changedAt(at).Format(time.RFC3339)
+	return change
+}
+
+// changedBy is whoever made a change, when WhatsApp says.
+func changedBy(session *Session, sender, senderPN *types.JID) *groupMember {
+	if sender == nil || sender.IsEmpty() {
+		return nil
+	}
+	alt := types.JID{}
+	if senderPN != nil {
+		alt = *senderPN
+	}
+	by := personOf(session, *sender, alt, "")
+	return &by
+}
+
+// changedAt is when a change happened; a notification that carries no time
+// happened as it arrived.
+func changedAt(at time.Time) time.Time {
+	if at.IsZero() {
+		return time.Now().UTC()
+	}
+	return at.UTC()
 }
 
 func viewOf(session *Session, info *types.GroupInfo) groupView {

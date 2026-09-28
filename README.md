@@ -167,6 +167,15 @@ Also working: group subjects → conversation names (on first sight and on
 renames), history sync import (messages + pushnames, chunked), LID → phone
 canonicalization for contact addresses.
 
+Group changes ride the batch's `groups` feed: `{address, name?}` for a
+subject, and a roster change as WhatsApp announced it —
+`joined`/`left: [{address, name?}]` (canonical digits), `by` who made it
+(absent when someone came in by the group's link, `reason: "invite"`),
+`timestamp`, and the chat's `muted`/`archived` marks. The account's own
+arrival is one too: added to a group, it alone joined; a group made with it
+in, the whole founding roster, `by` its creator. OpenBSP applies the subject
+and reads nothing else of an entry.
+
 ## Development
 
 ```bash

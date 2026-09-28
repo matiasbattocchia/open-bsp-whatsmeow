@@ -98,10 +98,21 @@ type WebhookBatch struct {
 }
 
 // WebhookGroup carries group metadata; the webhook applies Name to the
-// matching conversation.
+// matching conversation. A roster change rides here too, as WhatsApp
+// announced it: Joined were added or came in, Left went out or were taken
+// out, By made the change (absent when the joiner came in by the group's
+// link, Reason "invite"), at Timestamp. The fields are empty on a subject
+// alone. Muted and Archived are the chat's marks then, as on a message.
 type WebhookGroup struct {
-	Address string `json:"address"`
-	Name    string `json:"name,omitempty"`
+	Address   string        `json:"address"`
+	Name      string        `json:"name,omitempty"`
+	Joined    []groupMember `json:"joined,omitempty"`
+	Left      []groupMember `json:"left,omitempty"`
+	By        *groupMember  `json:"by,omitempty"`
+	Reason    string        `json:"reason,omitempty"`
+	Timestamp string        `json:"timestamp,omitempty"`
+	Muted     bool          `json:"muted,omitempty"`
+	Archived  bool          `json:"archived,omitempty"`
 }
 
 type WebhookMessage struct {
