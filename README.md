@@ -103,6 +103,26 @@ services:
   `q` is required (422 without it) and 25 entries is the most one lookup
   answers: this is a lookup, not a dump.
 - `DELETE /sessions/{address}` — logout + delete device.
+- The groups, on the session `{address}`; `{group}` is the group's JID, the
+  `conversation_address` its messages carry. Members are canonical phone
+  digits both ways. Each call answers when WhatsApp has; the group stays
+  WhatsApp's, and what the consumer sees of a change afterwards is the
+  group's own line about it. WhatsApp's own refusals pass through as 4xx:
+  403 when the account is no admin of the group, 404 for a group it is not
+  in, 406 for a subject it will not take.
+  - `POST /groups/{address}` — `{name, members}` makes a group and answers
+    it: `{address, name, members: [{address, name?, admin?}], not_added?}`.
+    The group exists even when a seat could not be filled; `not_added`
+    names each such person with WhatsApp's code (403: their settings keep
+    strangers from adding them, an invite is the way in; 409: already in).
+  - `GET /groups/{address}/{group}` — `{address, name, members}`, the group
+    as WhatsApp holds it.
+  - `PATCH /groups/{address}/{group}` — `{name}` sets the subject.
+  - `DELETE /groups/{address}/{group}` — the account leaves.
+  - `POST /groups/{address}/{group}/members` — `{members}` seats them; a
+    seat the server would not fill fails the call (422) naming each.
+  - `DELETE /groups/{address}/{group}/members` — `{members}` takes them
+    out; somebody not in the group is a 404 before anything is sent.
 
 ## Status / TODO (v0)
 

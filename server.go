@@ -36,10 +36,10 @@ func NewServer(cfg *Config, manager *Manager, log waLog.Logger) *Server {
 	return &Server{cfg: cfg, manager: manager, log: log}
 }
 
-// routes is the whole HTTP surface. The address book sits at its own root
-// because a pattern under /sessions/{address}/ overlaps /sessions/pending/{id}
-// on the path "/sessions/pending/<leaf>", and the mux refuses to register two
-// patterns neither of which is the more specific.
+// routes is the whole HTTP surface. The address book and the groups sit at
+// roots of their own because a pattern under /sessions/{address}/ overlaps
+// /sessions/pending/{id} on the path "/sessions/pending/<leaf>", and the mux
+// refuses to register two patterns neither of which is the more specific.
 func (s *Server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /dispatch", s.auth(s.handleDispatch))
@@ -48,6 +48,12 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sessions/{address}", s.auth(s.handleSessionStatus))
 	mux.HandleFunc("DELETE /sessions/{address}", s.auth(s.handleLogout))
 	mux.HandleFunc("GET /contacts/{address}", s.auth(s.handleContacts))
+	mux.HandleFunc("POST /groups/{address}", s.auth(s.handleCreateGroup))
+	mux.HandleFunc("GET /groups/{address}/{group}", s.auth(s.handleGroup))
+	mux.HandleFunc("PATCH /groups/{address}/{group}", s.auth(s.handleRenameGroup))
+	mux.HandleFunc("DELETE /groups/{address}/{group}", s.auth(s.handleLeaveGroup))
+	mux.HandleFunc("POST /groups/{address}/{group}/members", s.auth(s.handleAddMembers))
+	mux.HandleFunc("DELETE /groups/{address}/{group}/members", s.auth(s.handleRemoveMembers))
 	return mux
 }
 
