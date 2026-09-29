@@ -215,8 +215,9 @@ func TestGroupChange(t *testing.T) {
 	change, ok = groupChange(&Session{}, &events.GroupInfo{
 		JID: group, Sender: &ana, Timestamp: at, Name: &types.GroupName{Name: "ops"},
 	})
-	if !ok || change.Name != "ops" || change.By != nil || len(change.Joined) != 0 {
-		t.Errorf("a rename is the subject alone: %+v", change)
+	if !ok || change.Name != "ops" || !change.Renamed || change.By == nil ||
+		change.By.Address != "5491100000001" || len(change.Joined) != 0 {
+		t.Errorf("a rename is the new subject, by whoever set it: %+v", change)
 	}
 
 	if _, ok := groupChange(&Session{}, &events.GroupInfo{
@@ -242,7 +243,7 @@ func TestJoinedGroup(t *testing.T) {
 		Participants: []types.GroupParticipant{{JID: ana}, {JID: own}},
 	}
 	change := joinedGroup(session, &events.JoinedGroup{Type: "new", Sender: &ana, GroupInfo: info})
-	if change.Name != "ops" || len(change.Joined) != 2 || change.By == nil ||
+	if change.Name != "ops" || change.Renamed || len(change.Joined) != 2 || change.By == nil ||
 		change.By.Address != "5491100000001" || change.Timestamp != "2026-09-28T12:00:00Z" {
 		t.Errorf("a new group: %+v", change)
 	}

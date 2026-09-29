@@ -191,8 +191,9 @@ func personOf(session *Session, jid, alt types.JID, live string) groupMember {
 // description, a setting or an admin seat is not a line the consumer keeps.
 func groupChange(session *Session, v *events.GroupInfo) (change WebhookGroup, ok bool) {
 	change = WebhookGroup{Address: v.JID.String()}
-	if v.Name != nil {
+	if v.Name != nil && v.Name.Name != "" {
 		change.Name = v.Name.Name
+		change.Renamed = true
 	}
 	for _, jid := range v.Join {
 		change.Joined = append(change.Joined, personOf(session, jid, types.JID{}, ""))
@@ -200,14 +201,12 @@ func groupChange(session *Session, v *events.GroupInfo) (change WebhookGroup, ok
 	for _, jid := range v.Leave {
 		change.Left = append(change.Left, personOf(session, jid, types.JID{}, ""))
 	}
-	if change.Name == "" && len(change.Joined) == 0 && len(change.Left) == 0 {
+	if !change.Renamed && len(change.Joined) == 0 && len(change.Left) == 0 {
 		return change, false
 	}
-	if len(change.Joined) > 0 || len(change.Left) > 0 {
-		change.By = changedBy(session, v.Sender, v.SenderPN)
-		if v.JoinReason == "invite" {
-			change.Reason = "invite"
-		}
+	change.By = changedBy(session, v.Sender, v.SenderPN)
+	if len(change.Joined) > 0 && v.JoinReason == "invite" {
+		change.Reason = "invite"
 	}
 	change.Timestamp = changedAt(v.Timestamp).Format(time.RFC3339)
 	return change, true
