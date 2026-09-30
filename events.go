@@ -710,6 +710,26 @@ func (m *Manager) handleSecretEncrypted(
 	m.log.Infof("Published edit of %s (%d mentions)", original, len(edit.Mentions))
 }
 
+// openReaction reads a reaction sealed under the secret of the message it lands on — the
+// shape WhatsApp sends a reaction in wherever the target carries a secret — and returns the
+// event with the reaction in the clear, so it takes the path every reaction takes. The
+// sealed payload names no target; the envelope's key does.
+func (m *Manager) openReaction(
+	session *Session, evt *events.Message, enc *waE2E.EncReactionMessage,
+) *events.Message {
+	reaction, err := session.Client.DecryptReaction(context.Background(), evt)
+	if err != nil {
+		m.log.Errorf("Decrypt reaction %s failed: %v", evt.Info.ID, err)
+		return nil
+	}
+	if reaction.GetKey() == nil {
+		reaction.Key = enc.GetTargetMessageKey()
+	}
+	open := *evt
+	open.Message = &waE2E.Message{ReactionMessage: reaction}
+	return &open
+}
+
 // handleProtocolMessage translates edits and revokes into the webhook's
 // edits/revokes arrays (applied as in-place updates keyed by the ORIGINAL
 // external id). Other protocol messages (app state, key distribution, ...)
@@ -779,6 +799,12 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	if enc := evt.Message.GetSecretEncryptedMessage(); enc != nil {
 		m.handleSecretEncrypted(session, evt, enc)
 		return
+	}
+
+	if enc := evt.Message.GetEncReactionMessage(); enc != nil {
+		if evt = m.openReaction(session, evt, enc); evt == nil {
+			return
+		}
 	}
 
 	content, mediaErr := m.buildContent(session, evt, true)
