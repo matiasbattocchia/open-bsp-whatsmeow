@@ -209,7 +209,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		writeJSON(w, map[string]any{
-			"external_id": externalID(session.Address, chat.User, session.Address, resp.ID),
+			"external_id": externalID(session.Address, canonicalUser(session, chat, types.JID{}), session.Address, resp.ID),
 			"status":      "sent",
 		})
 
@@ -244,7 +244,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 			sender := chat
 			if senderSegment != "" && senderSegment != session.Address {
-				sender = types.NewJID(senderSegment, types.DefaultUserServer)
+				sender = addressJID(senderSegment)
 			}
 
 			if err := session.Client.MarkRead(
@@ -319,7 +319,7 @@ func referencedKey(session *Session, content MessageContent) (id string, sender 
 		}
 		return id, session.Client.Store.ID.ToNonAD(), true
 	}
-	return id, types.NewJID(senderSegment, types.DefaultUserServer), true
+	return id, addressJID(senderSegment), true
 }
 
 // replyContext turns re_message_id into a quote (ContextInfo), matching the
@@ -384,10 +384,10 @@ func encodeMentions(session *Session, chat types.JID, content MessageContent, te
 // wireMention is a canonical address in the namespace the chat speaks: the
 // LID when the chat is lid-addressed and the mapping is known, the phone
 // number otherwise (including the honest fallback — an unmapped peer keeps
-// the form we have rather than inventing one).
+// the form we have rather than inventing one, and a LID-only peer is its LID).
 func wireMention(session *Session, address string, lidChat bool) types.JID {
-	pn := types.NewJID(address, types.DefaultUserServer)
-	if !lidChat {
+	pn := addressJID(address)
+	if !lidChat || pn.Server != types.DefaultUserServer {
 		return pn
 	}
 	lid, err := session.Client.Store.LIDs.GetLIDForPN(context.Background(), pn)
@@ -797,13 +797,13 @@ func buildRevoke(
 }
 
 func dispatchChatJID(req dispatchRequest) (types.JID, error) {
-	// conversation_address is the chat: a full JID for groups (contains "@"),
-	// the peer's bare number for direct chats.
+	// conversation_address is the chat: a full JID for groups and LID-only
+	// peers (contains "@"), the peer's bare number for every other direct chat.
 	if addr := req.Record.ConversationAddress; addr != "" {
 		if strings.Contains(addr, "@") {
 			return types.ParseJID(addr)
 		}
-		return types.NewJID(addr, types.DefaultUserServer), nil
+		return addressJID(addr), nil
 	}
 	return types.JID{}, fmt.Errorf("record has no conversation_address")
 }

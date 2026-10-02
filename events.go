@@ -118,11 +118,13 @@ func (m *Manager) postGroupChange(session *Session, change WebhookGroup) {
 	}
 }
 
-// canonicalUser resolves a JID to the canonical bare phone digits used as
-// contact_address. LID (hidden user) JIDs are mapped back to the phone
-// number via the alt JID the event carries, falling back to the store's LID
-// map, then to the LID digits themselves (rare: a LID-only peer the store
-// has never seen a mapping for).
+// canonicalUser resolves a JID to the canonical address used as
+// contact_address: bare phone digits. LID (hidden user) JIDs are mapped back
+// to the phone number via the alt JID the event carries, falling back to the
+// store's LID map. A LID-only peer the store has never seen a mapping for keeps
+// its server — `<lid>@lid` — because bare digits are a phone number to every
+// reader, this bridge's sends included, and a LID read as one addresses a
+// number that does not exist. addressJID reverses it.
 func canonicalUser(session *Session, jid, alt types.JID) string {
 	if jid.Server != types.HiddenUserServer {
 		return jid.User
@@ -134,7 +136,19 @@ func canonicalUser(session *Session, jid, alt types.JID) string {
 	if err == nil && !pn.IsEmpty() {
 		return pn.User
 	}
-	return jid.User
+	return jid.ToNonAD().String()
+}
+
+// addressJID is the JID a canonical address names: bare digits are a phone
+// number, and an address that carries its server — a LID-only peer, a group —
+// is parsed as written.
+func addressJID(address string) types.JID {
+	if strings.Contains(address, "@") {
+		if jid, err := types.ParseJID(address); err == nil {
+			return jid
+		}
+	}
+	return types.NewJID(address, types.DefaultUserServer)
 }
 
 // conversationAddressFor is the chat's address: the group JID for groups,
@@ -233,7 +247,7 @@ func contactName(session *Session, user, live string) (name string, saved bool) 
 		return strings.TrimSpace(live), false
 	}
 	contact, err := session.Client.Store.Contacts.GetContact(
-		context.Background(), types.NewJID(user, types.DefaultUserServer),
+		context.Background(), addressJID(user),
 	)
 	if err != nil {
 		return strings.TrimSpace(live), false
@@ -321,7 +335,9 @@ func mentionsIn(session *Session, msg *waE2E.Message, text string) (string, []Me
 				continue
 			}
 			address := canonicalUser(session, jid, types.JID{})
-			if address != jid.User {
+			// The inline token is digits; a LID-only address has no other
+			// digits to put there, so the wire's stay.
+			if address != jid.User && !strings.Contains(address, "@") {
 				text = strings.ReplaceAll(text, "@"+jid.User, "@"+address)
 			}
 			mentions = append(mentions, Mention{Address: address})
@@ -377,7 +393,8 @@ func keySender(session *Session, chat types.JID, author string, fromMe bool, par
 			return canonicalUser(session, jid, types.JID{})
 		}
 	}
-	return chat.User
+	// The DM peer, in the canonical namespace chatSegment mints ids in.
+	return canonicalUser(session, chat, types.JID{})
 }
 
 // parseVcard extracts the fields OpenBSP's ContactData carries (FN and TEL

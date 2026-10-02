@@ -160,8 +160,12 @@ Parity notes vs the `whatsapp` (Cloud API) service:
   from WhatsApp's CDN): FileParts without a URI render as unavailable
   attachments. History rows always carry explicit final statuses — never
   `pending`, which is OpenBSP's automation gate.
-- LID-only peers the store has no phone mapping for fall back to the LID
-  digits as sender_address (rare; the mapping fills in as messages flow).
+- A LID-only peer — one the store has no phone mapping for — is addressed as
+  its full JID, `<lid>@lid`, wherever an address is canonical digits otherwise
+  (conversation_address, sender_address, mentions, members, external id
+  segments). Bare digits are always a phone number; a dispatch to `<lid>@lid`
+  goes to the LID. Once the mapping is known the same person reads as their
+  phone number, which is a different address.
 
 Also working: group subjects → conversation names (on first sight and on
 renames), history sync import (messages + pushnames, chunked), LID → phone
