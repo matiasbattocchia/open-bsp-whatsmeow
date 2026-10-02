@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"runtime/debug"
@@ -17,6 +18,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/socket"
 	"go.mau.fi/whatsmeow/types"
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"golang.org/x/text/unicode/norm"
@@ -83,27 +85,47 @@ func (s *Server) auth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// sendErrorStatus maps a SendMessage failure onto the dispatcher's
-// transient/permanent split. Connectivity and timeouts stay 5xx — the
-// dispatch cron retries; what the message or its recipient makes impossible
-// is 4xx — the dispatcher stamps the row failed instead of re-sending it
-// every minute for 12 hours. ErrServerReturnedError is on the permanent
-// side deliberately: the server actively rejected this message, and the
-// same bytes will be rejected again (mirrors whatsapp-dispatcher, where
-// unknown Meta codes default to permanent).
+// sendErrorStatus maps a failed WhatsApp request onto the dispatcher's
+// transient/permanent split. Only what clears on its own is 503 — the
+// connection, a timeout, WhatsApp saying it is busy — and the dispatch cron
+// retries it; everything else is 422 and the dispatcher stamps the row failed,
+// since the same request fails the same way again (mirrors whatsapp-dispatcher,
+// where unknown Meta codes default to permanent). 503 rather than 502: a proxy
+// in front of the bridge can swap an origin 502 for its own error page, and the
+// row would record that page instead of the reason.
 func sendErrorStatus(err error) int {
-	for _, permanent := range []error{
-		whatsmeow.ErrBroadcastListUnsupported,
-		whatsmeow.ErrUnknownServer,
-		whatsmeow.ErrRecipientADJID,
-		whatsmeow.ErrInvalidInlineBotID,
-		whatsmeow.ErrServerReturnedError,
+	if transientSendError(err) {
+		return http.StatusServiceUnavailable
+	}
+	return http.StatusUnprocessableEntity
+}
+
+func transientSendError(err error) bool {
+	for _, transient := range []error{
+		whatsmeow.ErrNotConnected,
+		whatsmeow.ErrIQTimedOut,
+		whatsmeow.ErrMessageTimedOut,
+		socket.ErrSocketClosed,
+		context.DeadlineExceeded,
+		context.Canceled,
 	} {
-		if errors.Is(err, permanent) {
-			return http.StatusUnprocessableEntity
+		if errors.Is(err, transient) {
+			return true
 		}
 	}
-	return http.StatusBadGateway
+	var disconnected *whatsmeow.DisconnectedError
+	if errors.As(err, &disconnected) {
+		return true
+	}
+	var iq *whatsmeow.IQError
+	if errors.As(err, &iq) {
+		switch iq.Code {
+		case 419, 429, 500, 503, 530: // resource-limit, rate-overlimit, server errors
+			return true
+		}
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr)
 }
 
 // dispatchRequest mirrors the connector dispatcher contract (see
@@ -208,7 +230,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 			if err := session.Client.SendChatPresence(
 				r.Context(), chat, types.ChatPresenceComposing, types.ChatPresenceMediaText,
 			); err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
+				http.Error(w, err.Error(), sendErrorStatus(err))
 				return
 			}
 		}
@@ -228,7 +250,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 			if err := session.Client.MarkRead(
 				r.Context(), []types.MessageID{id}, time.Now(), chat, sender,
 			); err != nil {
-				http.Error(w, err.Error(), http.StatusBadGateway)
+				http.Error(w, err.Error(), sendErrorStatus(err))
 				return
 			}
 		}
@@ -587,16 +609,21 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 
 	resp, err := http.Get(req.MediaURL)
 	if err != nil {
-		return nil, http.StatusBadGateway, fmt.Errorf("fetch media: %w", err)
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("fetch media: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return nil, http.StatusBadGateway, fmt.Errorf("fetch media: storage responded %d", resp.StatusCode)
+		// A file storage no longer has, or never had, stays missing.
+		status := http.StatusUnprocessableEntity
+		if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+			status = http.StatusServiceUnavailable
+		}
+		return nil, status, fmt.Errorf("fetch media: storage responded %d", resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxSize+1))
 	if err != nil {
-		return nil, http.StatusBadGateway, fmt.Errorf("read media: %w", err)
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("read media: %w", err)
 	}
 	if int64(len(data)) > maxSize {
 		return nil, http.StatusUnprocessableEntity,
@@ -605,7 +632,9 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 
 	upload, err := session.Client.Upload(r.Context(), data, mediaType)
 	if err != nil {
-		return nil, http.StatusBadGateway, fmt.Errorf("upload to WhatsApp: %w", err)
+		// The media CDN's refusals are not typed; an upload that failed is
+		// worth another go.
+		return nil, http.StatusServiceUnavailable, fmt.Errorf("upload to WhatsApp: %w", err)
 	}
 
 	mimetype := proto.String(file.MimeType)
