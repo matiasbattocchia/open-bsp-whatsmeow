@@ -156,7 +156,7 @@ func TestChatSegmentIsCanonicalInBothNamespaces(t *testing.T) {
 // seeing what was corrected — with the original sitting two rows above it.
 func TestKeySenderReadsFromMeInTheCarriersFrame(t *testing.T) {
 	session := &Session{Address: "5491133585694"}
-	group := types.NewJID("120363025580475259", types.GroupServer)
+	group := types.MessageSource{Chat: types.NewJID("120363025580475259", types.GroupServer), IsGroup: true}
 	peer := "5492616514662"
 
 	// their edit, of their own message: the key's "mine" is theirs
@@ -172,10 +172,27 @@ func TestKeySenderReadsFromMeInTheCarriersFrame(t *testing.T) {
 	if got := keySender(session, group, peer, false, other+"@s.whatsapp.net"); got != other {
 		t.Errorf("keyed participant = %q, want %q", got, other)
 	}
-	// a DM carries no participant: the peer IS the chat
-	dm := types.NewJID(other, types.DefaultUserServer)
-	if got := keySender(session, dm, peer, false, ""); got != other {
-		t.Errorf("dm fallback = %q, want %q", got, other)
+}
+
+// A DM key names no participant, and the chat has two parties: a key that is not the
+// carrier's names the other one. The peer reacting to our message keyed it as not
+// theirs, which is ours — read as the peer's, 70 reactions in 30 days pointed at
+// messages that never existed. And when we react from the phone in a chat addressed
+// by LID, the peer is named the way chatSegment names it, through the alternate JID —
+// read off the bare chat it was the LID digits, an id no row carries.
+func TestKeySenderInADMNamesTheOtherParty(t *testing.T) {
+	session := &Session{Address: "5491133585694"}
+	peer := types.NewJID("5492616514662", types.DefaultUserServer)
+
+	theirs := types.MessageSource{Chat: peer, Sender: peer}
+	if got := keySender(session, theirs, peer.User, false, ""); got != session.Address {
+		t.Errorf("the peer's key on our message = %q, want us %q", got, session.Address)
+	}
+
+	lid := types.NewJID("220104256131100", types.HiddenUserServer)
+	ours := types.MessageSource{Chat: lid, IsFromMe: true, RecipientAlt: peer}
+	if got := keySender(session, ours, session.Address, false, ""); got != peer.User {
+		t.Errorf("our key on the peer's message = %q, want the peer %q", got, peer.User)
 	}
 }
 

@@ -97,7 +97,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 				if stanza, participant := quotedRef(parsed.Message); stanza != "" {
 					content.ReMessageID = externalID(
 						session.Address, chatSegment(session, parsed.Info.MessageSource),
-						keySender(session, chat, senderSegment, false, participant), stanza,
+						keySender(session, parsed.Info.MessageSource, senderSegment, false, participant), stanza,
 					)
 				}
 			}

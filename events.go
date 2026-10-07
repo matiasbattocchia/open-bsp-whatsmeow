@@ -397,13 +397,17 @@ func authorSegment(session *Session, info types.MessageInfo) string {
 }
 
 // keySender resolves the sender segment of an external id from
-// MessageKey-style references (fromMe + participant), falling back to the
-// DM peer (== chat) when no participant is given.
+// MessageKey-style references (fromMe + participant). `source` is the message
+// carrying the key.
 //
 // `author` is who wrote the message CARRYING the key, because `fromMe` is written
 // in their frame: an edit or a reaction from somebody else says "mine" about THEIR
 // message, and reading it as ours would name a message the referent never was.
-func keySender(session *Session, chat types.JID, author string, fromMe bool, participant string) string {
+//
+// A DM key names no participant: the chat has two parties, so a message that is not
+// the author's is the other one's — ours when the peer carries the key, the peer's
+// when we do, named the way chatSegment names the peer.
+func keySender(session *Session, source types.MessageSource, author string, fromMe bool, participant string) string {
 	if fromMe {
 		return author
 	}
@@ -412,8 +416,13 @@ func keySender(session *Session, chat types.JID, author string, fromMe bool, par
 			return canonicalUser(session, jid, types.JID{})
 		}
 	}
-	// The DM peer, in the canonical namespace chatSegment mints ids in.
-	return canonicalUser(session, chat, types.JID{})
+	if source.IsGroup {
+		return canonicalUser(session, source.Chat, types.JID{})
+	}
+	if author != session.Address {
+		return session.Address
+	}
+	return chatSegment(session, source)
 }
 
 // parseVcard extracts the fields OpenBSP's ContactData carries (FN and TEL
@@ -507,7 +516,7 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 			ReMessageID: externalID(
 				session.Address, chatSegment(session, evt.Info.MessageSource),
 				keySender(
-					session, evt.Info.Chat, authorSegment(session, evt.Info),
+					session, evt.Info.MessageSource, authorSegment(session, evt.Info),
 					key.GetFromMe(), key.GetParticipant(),
 				),
 				key.GetID(),
@@ -735,7 +744,7 @@ func (m *Manager) handleSecretEncrypted(
 	ownSegment := authorSegment(session, evt.Info)
 	original := externalID(
 		session.Address, chatSegment(session, evt.Info.MessageSource),
-		keySender(session, evt.Info.Chat, ownSegment, key.GetFromMe(), key.GetParticipant()),
+		keySender(session, evt.Info.MessageSource, ownSegment, key.GetFromMe(), key.GetParticipant()),
 		key.GetID(),
 	)
 	ownID := externalID(
@@ -791,7 +800,7 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 	ownSegment := authorSegment(session, evt.Info)
 	original := externalID(
 		session.Address, chatSegment(session, evt.Info.MessageSource),
-		keySender(session, evt.Info.Chat, ownSegment, key.GetFromMe(), key.GetParticipant()),
+		keySender(session, evt.Info.MessageSource, ownSegment, key.GetFromMe(), key.GetParticipant()),
 		key.GetID(),
 	)
 	timestamp := evt.Info.Timestamp.Format(time.RFC3339)
@@ -881,7 +890,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		if stanza, participant := quotedRef(evt.Message); stanza != "" {
 			content.ReMessageID = externalID(
 				session.Address, chatSegment(session, evt.Info.MessageSource),
-				keySender(session, chat, senderSegment, false, participant), stanza,
+				keySender(session, evt.Info.MessageSource, senderSegment, false, participant), stanza,
 			)
 		}
 	}
