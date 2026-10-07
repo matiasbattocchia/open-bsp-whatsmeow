@@ -144,6 +144,8 @@ Working end to end:
   WhatsApp's per-type size caps (oversize = permanent 422).
 - Reactions, locations, and contact cards (vCard) in/out — same DataPart
   shapes as the Cloud API service
+- Polls in — DataPart kind `poll` (`question`, `options`,
+  `selectable_count`, 0 = any number); votes are not read yet
 - Replies (`re_message_id` ↔ quoted message) in/out; edits and revokes in
 - Delivery/read receipts in; read receipts + typing indicators out
   (`MarkRead`, `SendChatPresence`)

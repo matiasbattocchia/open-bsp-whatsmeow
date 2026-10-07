@@ -239,6 +239,15 @@ type LocationData struct {
 	Address   string  `json:"address,omitempty"`
 }
 
+// PollData is a poll as its author wrote it (DataPart kind "poll"). The Cloud
+// API has no polls, so the shape is ours: SelectableCount is how many options
+// one voter may pick, 0 meaning any number of them.
+type PollData struct {
+	Question        string   `json:"question"`
+	Options         []string `json:"options"`
+	SelectableCount uint32   `json:"selectable_count"`
+}
+
 // ContactData mirrors the Cloud API contacts object (subset).
 type ContactData struct {
 	Name struct {

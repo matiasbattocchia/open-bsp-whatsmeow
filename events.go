@@ -360,12 +360,31 @@ func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
 		msg.GetLocationMessage().GetContextInfo(),
 		msg.GetContactMessage().GetContextInfo(),
 		msg.GetContactsArrayMessage().GetContextInfo(),
+		pollCreation(msg).GetContextInfo(),
 	} {
 		if ctx.GetStanzaID() != "" {
 			return ctx.GetStanzaID(), ctx.GetParticipant()
 		}
 	}
 	return "", ""
+}
+
+// pollCreation is the poll msg carries, whichever generation of the message
+// carries it: WhatsApp moved polls to a new field more than once (V3 is the
+// single-choice poll), each holding the same PollCreationMessage.
+func pollCreation(msg *waE2E.Message) *waE2E.PollCreationMessage {
+	for _, poll := range []*waE2E.PollCreationMessage{
+		msg.GetPollCreationMessage(),
+		msg.GetPollCreationMessageV2(),
+		msg.GetPollCreationMessageV3(),
+		msg.GetPollCreationMessageV5(),
+		msg.GetPollCreationMessageV6(),
+	} {
+		if poll != nil {
+			return poll
+		}
+	}
+	return nil
 }
 
 // authorSegment is who WROTE an event, as an external id's sender segment: the
@@ -517,6 +536,18 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 			contacts = append(contacts, parseVcard(c.GetDisplayName(), c.GetVcard()))
 		}
 		return dataPart("contacts", contacts)
+	}
+
+	if poll := pollCreation(evt.Message); poll != nil {
+		options := make([]string, 0, len(poll.GetOptions()))
+		for _, option := range poll.GetOptions() {
+			options = append(options, option.GetOptionName())
+		}
+		return dataPart("poll", PollData{
+			Question:        poll.GetName(),
+			Options:         options,
+			SelectableCount: poll.GetSelectableOptionsCount(),
+		})
 	}
 
 	media := inboundMediaInfo(evt.Message)
