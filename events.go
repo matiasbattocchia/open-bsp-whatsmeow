@@ -547,6 +547,13 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 		return dataPart("contacts", contacts)
 	}
 
+	if update := evt.Message.GetPollUpdateMessage(); update != nil {
+		if vote := m.pollVote(session, evt, update); vote != nil {
+			return vote, nil
+		}
+		return nil, nil
+	}
+
 	if poll := pollCreation(evt.Message); poll != nil {
 		options := make([]string, 0, len(poll.GetOptions()))
 		for _, option := range poll.GetOptions() {
@@ -908,6 +915,8 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		Muted:               muted,
 		Archived:            archived,
 	}
+	m.rememberPoll(message.ExternalID, content)
+
 	// The event's pushname is the AUTHOR's, so it only speaks for the author:
 	// on an echo it is our own name, and lending it to the peer (`live` names
 	// the DM below) would name the chat after ourselves. Our own side is named

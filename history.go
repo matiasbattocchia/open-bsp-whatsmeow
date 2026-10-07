@@ -76,11 +76,12 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 				continue
 			}
 
-			// Protocol messages and reactions reference other rows; edits
-			// and revokes are already reflected in the history content, and
-			// standalone reaction rows would be noise.
+			// Protocol messages, reactions and votes reference other rows;
+			// edits and revokes are already reflected in the history content,
+			// and standalone reaction or vote rows would be noise.
 			if parsed.Message.GetProtocolMessage() != nil ||
-				parsed.Message.GetReactionMessage() != nil {
+				parsed.Message.GetReactionMessage() != nil ||
+				parsed.Message.GetPollUpdateMessage() != nil {
 				skipped++
 				continue
 			}
@@ -126,6 +127,8 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			} else if name := conversation.GetName(); name != "" {
 				message.ConversationName = name
 			}
+
+			m.rememberPoll(message.ExternalID, content)
 
 			pending.Messages = append(pending.Messages, message)
 			imported++

@@ -248,6 +248,15 @@ type PollData struct {
 	SelectableCount uint32   `json:"selectable_count"`
 }
 
+// PollVoteData is one voter's choice on a poll (DataPart kind "poll_vote", its
+// re_message_id the poll). It replaces that voter's earlier choice; Selected
+// empty is the vote withdrawn. The question rides along so the row reads on
+// its own.
+type PollVoteData struct {
+	Question string   `json:"question"`
+	Selected []string `json:"selected"`
+}
+
 // ContactData mirrors the Cloud API contacts object (subset).
 type ContactData struct {
 	Name struct {

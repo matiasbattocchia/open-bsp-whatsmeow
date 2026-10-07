@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -170,6 +171,17 @@ func finishOpen(ctx context.Context, db *sql.DB, dialect string, log waLog.Logge
 		}
 	}
 
+	// Every poll seen, by its external id: a vote names its choices only by their
+	// SHA-256, so reading one back needs the names the poll hashed.
+	if _, err := db.ExecContext(ctx, `
+		create table if not exists bridge_polls (
+			external_id text primary key,
+			question    text not null,
+			options     text not null
+		)`); err != nil {
+		return nil, fmt.Errorf("create bridge_polls: %w", err)
+	}
+
 	// Existing databases predate these columns; neither engine has a portable
 	// IF NOT EXISTS for one, so the duplicate-column error is the no-op path.
 	for _, column := range []string{
@@ -231,4 +243,40 @@ func (s *Store) DeleteMapping(ctx context.Context, deviceJID string) error {
 	_, err := s.DB.ExecContext(ctx,
 		`delete from bridge_sessions where device_jid = $1`, deviceJID)
 	return err
+}
+
+// SavePoll keeps a poll's question and options. A poll never changes once sent,
+// so a second sighting (an echo, a history import) keeps the first.
+func (s *Store) SavePoll(ctx context.Context, externalID string, poll PollData) error {
+	options, err := json.Marshal(poll.Options)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, `
+		insert into bridge_polls (external_id, question, options)
+		values ($1, $2, $3)
+		on conflict (external_id) do nothing`,
+		externalID, poll.Question, string(options))
+	return err
+}
+
+// GetPoll is the poll kept under externalID, or nil when the bridge never saw it.
+func (s *Store) GetPoll(ctx context.Context, externalID string) (*PollData, error) {
+	var (
+		poll    PollData
+		options string
+	)
+	err := s.DB.QueryRowContext(ctx, `
+		select question, options from bridge_polls where external_id = $1`,
+		externalID).Scan(&poll.Question, &options)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(options), &poll.Options); err != nil {
+		return nil, err
+	}
+	return &poll, nil
 }

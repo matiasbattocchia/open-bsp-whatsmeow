@@ -144,8 +144,11 @@ Working end to end:
   WhatsApp's per-type size caps (oversize = permanent 422).
 - Reactions, locations, and contact cards (vCard) in/out — same DataPart
   shapes as the Cloud API service
-- Polls in — DataPart kind `poll` (`question`, `options`,
-  `selectable_count`, 0 = any number); votes are not read yet
+- Polls and votes in — DataPart kind `poll` (`question`, `options`,
+  `selectable_count`, 0 = any number) and `poll_vote` (`question`, `selected`,
+  `re_message_id` the poll; each replaces the voter's last, empty =
+  withdrawn). A vote reads only on a poll the bridge saw: its choices are
+  hashes, matched against the options kept in `bridge_polls`
 - Replies (`re_message_id` ↔ quoted message) in/out; edits and revokes in
 - Delivery/read receipts in; read receipts + typing indicators out
   (`MarkRead`, `SendChatPresence`)
