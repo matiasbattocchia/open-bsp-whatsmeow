@@ -27,6 +27,12 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
   (OpenBSP never reads that schema), or an embedded SQLite file when there is
   no database to lend. Either way the container is disposable —
   kill/update/restart it freely; the state is not in it.
+- **Inbound traffic outlives a failed post** — WhatsApp has the message acked
+  before the bridge sees it, so every batch for `whatsapp-web-webhook` is
+  written to `bridge_outbox` (same database) first. A lane per session posts
+  them oldest first, retrying an outage on a 1 s → 1 min ladder for 12 hours
+  and a 500 for 5 minutes; a 4xx is the receiver's final answer and is
+  dropped. A restart resumes every lane.
 - **No Supabase credentials** — the bridge only holds the shared
   `BRIDGE_TOKEN` and talks to the three edge functions over HTTP.
 - **One replica by design** — a WhatsApp session is a single WebSocket.

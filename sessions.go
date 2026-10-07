@@ -124,6 +124,7 @@ func (s *Session) groupName(address string) string {
 type Manager struct {
 	store   *Store
 	openbsp *OpenBSP
+	outbox  *Outbox
 	log     waLog.Logger
 
 	mu       sync.RWMutex
@@ -135,6 +136,7 @@ func NewManager(st *Store, openbsp *OpenBSP, log waLog.Logger) *Manager {
 	return &Manager{
 		store:    st,
 		openbsp:  openbsp,
+		outbox:   NewOutbox(st.DB, openbsp, log.Sub("outbox")),
 		log:      log,
 		sessions: make(map[string]*Session),
 		pending:  make(map[string]*PendingSession),
@@ -147,8 +149,13 @@ func randomID() string {
 	return hex.EncodeToString(buf)
 }
 
-// Start connects every device already present in the session store.
+// Start resumes the outbox, then connects every device already present in the
+// session store — what an earlier process still owes goes out before anything new.
 func (m *Manager) Start(ctx context.Context) error {
+	if err := m.outbox.Start(ctx); err != nil {
+		return fmt.Errorf("resume outbox: %w", err)
+	}
+
 	devices, err := m.store.Container.GetAllDevices(ctx)
 	if err != nil {
 		return fmt.Errorf("load devices: %w", err)

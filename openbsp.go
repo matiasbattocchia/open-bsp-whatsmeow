@@ -262,12 +262,26 @@ type FilePayload struct {
 	Size     int64  `json:"size,omitempty"`
 }
 
+// ResponseError is a receiver that answered, and not with a success: Status
+// is what the outbox reads to tell a refusal from a blip.
+type ResponseError struct {
+	Path   string
+	Status int
+}
+
+func (e *ResponseError) Error() string {
+	return fmt.Sprintf("openbsp %s responded %d", e.Path, e.Status)
+}
+
 func (o *OpenBSP) post(path string, body any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
+	return o.postJSON(path, payload)
+}
 
+func (o *OpenBSP) postJSON(path string, payload []byte) error {
 	req, err := http.NewRequest(http.MethodPost, o.baseURL+path, bytes.NewReader(payload))
 	if err != nil {
 		return err
@@ -282,13 +296,9 @@ func (o *OpenBSP) post(path string, body any) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 300 {
-		return fmt.Errorf("openbsp %s responded %d", path, resp.StatusCode)
+		return &ResponseError{Path: path, Status: resp.StatusCode}
 	}
 	return nil
-}
-
-func (o *OpenBSP) PostBatch(batch WebhookBatch) error {
-	return o.post("/whatsapp-web-webhook", batch)
 }
 
 // UploadMedia stores decrypted media bytes in OpenBSP storage via the

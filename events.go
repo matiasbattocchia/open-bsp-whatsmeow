@@ -113,7 +113,7 @@ func (m *Manager) postGroupChange(session *Session, change WebhookGroup) {
 		OrganizationAddress: session.Address,
 		Groups:              []WebhookGroup{change},
 	}
-	if err := session.receiver.PostBatch(batch); err != nil {
+	if err := m.outbox.Deliver(session, batch); err != nil {
 		m.log.Errorf("Post group change for %s failed: %v", change.Address, err)
 	}
 }
@@ -614,7 +614,7 @@ func (m *Manager) flushOffline(session *Session) {
 	}
 	m.log.Infof("Queue drained for %s — posting %d message(s) as one", session.Address, len(held))
 	batch := WebhookBatch{OrganizationAddress: session.Address, Messages: held}
-	if err := session.receiver.PostBatch(batch); err != nil {
+	if err := m.outbox.Deliver(session, batch); err != nil {
 		m.log.Errorf("Post drained queue for %s failed: %v", session.Address, err)
 	}
 }
@@ -720,11 +720,11 @@ func (m *Manager) handleSecretEncrypted(
 		return
 	}
 	batch := WebhookBatch{OrganizationAddress: session.Address, Edits: []WebhookEdit{*edit}}
-	if err := session.receiver.PostBatch(batch); err != nil {
+	if err := m.outbox.Deliver(session, batch); err != nil {
 		m.log.Errorf("Post edit for %s failed: %v", original, err)
 		return
 	}
-	m.log.Infof("Published edit of %s (%d mentions)", original, len(edit.Mentions))
+	m.log.Infof("Queued edit of %s (%d mentions)", original, len(edit.Mentions))
 }
 
 // openReaction reads a reaction sealed under the secret of the message it lands on — the
@@ -790,7 +790,7 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 		return
 	}
 
-	if err := session.receiver.PostBatch(batch); err != nil {
+	if err := m.outbox.Deliver(session, batch); err != nil {
 		m.log.Errorf("Post edit/revoke for %s failed: %v", original, err)
 	}
 }
@@ -911,7 +911,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 					return
 				}
 				session.noteGroupName(chat.String(), info.Name)
-				if err := session.receiver.PostBatch(WebhookBatch{
+				if err := m.outbox.Deliver(session, WebhookBatch{
 					OrganizationAddress: session.Address,
 					Groups: []WebhookGroup{
 						{Address: chat.String(), Name: info.Name},
@@ -950,7 +950,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		return
 	}
 
-	if err := session.receiver.PostBatch(batch); err != nil {
+	if err := m.outbox.Deliver(session, batch); err != nil {
 		m.log.Errorf("Post message %s failed: %v", message.ExternalID, err)
 	}
 }
@@ -1015,7 +1015,7 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 		batch.Statuses = append(batch.Statuses, status)
 	}
 
-	if err := session.receiver.PostBatch(batch); err != nil {
+	if err := m.outbox.Deliver(session, batch); err != nil {
 		m.log.Errorf("Post receipts for %s failed: %v", evt.Chat, err)
 	}
 }
