@@ -4,25 +4,59 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waWeb"
+	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
 
 // rememberPoll keeps the poll a message carries, if it carries one, under the
-// message's external id — the id its votes will point at.
-func (m *Manager) rememberPoll(externalID string, content *MessageContent) {
+// message's external id — the id its votes will point at — and answers it.
+func (m *Manager) rememberPoll(externalID string, content *MessageContent) *PollData {
 	if content.Type != "data" || content.Kind != "poll" {
-		return
+		return nil
 	}
 	var poll PollData
 	if err := json.Unmarshal(content.Data, &poll); err != nil {
 		m.log.Errorf("Read poll %s failed: %v", externalID, err)
-		return
+		return nil
 	}
 	if err := m.store.SavePoll(context.Background(), externalID, poll); err != nil {
 		m.log.Errorf("Save poll %s failed: %v", externalID, err)
+	}
+	return &poll
+}
+
+// seedVotes keeps the votes a history import carries on a poll, already opened:
+// the import brings no vote rows, but the tally a later live vote reports starts
+// from these. The keys are in the account's own frame — it is our copy of the chat.
+func (m *Manager) seedVotes(session *Session, source types.MessageSource, pollID string, poll *PollData, updates []*waWeb.PollUpdate) {
+	ctx := context.Background()
+	for _, update := range updates {
+		key := update.GetPollUpdateMessageKey()
+		var voter string
+		switch {
+		case key.GetFromMe():
+			voter = session.Address
+		case key.GetParticipant() != "":
+			jid, err := types.ParseJID(key.GetParticipant())
+			if err != nil {
+				continue
+			}
+			voter = canonicalUser(session, jid, types.JID{})
+		case !source.IsGroup:
+			voter = chatSegment(session, source)
+		default:
+			continue
+		}
+		selected, _ := selectedOptions(poll.Options, update.GetVote().GetSelectedOptions())
+		at := time.UnixMilli(update.GetSenderTimestampMS())
+		if err := m.store.SaveVote(ctx, pollID, voter, selected, at); err != nil {
+			m.log.Errorf("Save vote on poll %s failed: %v", pollID, err)
+		}
 	}
 }
 
@@ -63,7 +97,18 @@ func (m *Manager) pollVote(session *Session, evt *events.Message, update *waE2E.
 			evt.Info.ID, pollID, unknown)
 	}
 
-	content, err := dataPart("poll_vote", PollVoteData{Question: poll.Question, Selected: selected})
+	data := PollVoteData{Question: poll.Question, Selected: selected}
+	at := evt.Info.Timestamp
+	if sent := update.GetSenderTimestampMS(); sent > 0 {
+		at = time.UnixMilli(sent)
+	}
+	if err := m.store.SaveVote(ctx, pollID, authorSegment(session, evt.Info), selected, at); err != nil {
+		m.log.Errorf("Save vote %s on poll %s failed: %v", evt.Info.ID, pollID, err)
+	} else if data.Results, err = m.store.PollResults(ctx, pollID, poll.Options); err != nil {
+		m.log.Errorf("Tally poll %s failed: %v", pollID, err)
+	}
+
+	content, err := dataPart("poll_vote", data)
 	if err != nil {
 		m.log.Errorf("Encode vote %s failed: %v", evt.Info.ID, err)
 		return nil

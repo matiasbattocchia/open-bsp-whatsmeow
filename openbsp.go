@@ -251,10 +251,20 @@ type PollData struct {
 // PollVoteData is one voter's choice on a poll (DataPart kind "poll_vote", its
 // re_message_id the poll). It replaces that voter's earlier choice; Selected
 // empty is the vote withdrawn. The question rides along so the row reads on
-// its own.
+// its own, and Results is the poll as it stands with this vote counted.
 type PollVoteData struct {
-	Question string   `json:"question"`
-	Selected []string `json:"selected"`
+	Question string       `json:"question"`
+	Selected []string     `json:"selected"`
+	Results  []PollResult `json:"results,omitempty"`
+}
+
+// PollResult is one option's tally: who picks it now, by address, in the order
+// they voted. Only votes the bridge saw are counted — live since it saw the poll,
+// or carried by the history import that brought it.
+type PollResult struct {
+	Option string   `json:"option"`
+	Votes  int      `json:"votes"`
+	Voters []string `json:"voters"`
 }
 
 // ContactData mirrors the Cloud API contacts object (subset).

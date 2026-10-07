@@ -128,7 +128,9 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 				message.ConversationName = name
 			}
 
-			m.rememberPoll(message.ExternalID, content)
+			if poll := m.rememberPoll(message.ExternalID, content); poll != nil {
+				m.seedVotes(session, parsed.Info.MessageSource, message.ExternalID, poll, webMsg.GetPollUpdates())
+			}
 
 			pending.Messages = append(pending.Messages, message)
 			imported++

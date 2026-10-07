@@ -6,10 +6,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/proto/waAdv"
+	"go.mau.fi/whatsmeow/proto/waCommon"
 	"go.mau.fi/whatsmeow/proto/waE2E"
+	"go.mau.fi/whatsmeow/proto/waWeb"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -154,7 +157,15 @@ func TestVoteReadsBackToThePollItAnswers(t *testing.T) {
 		got := vote(t, peerClient, theirView, ourPoll, types.MessageSource{Chat: peer, Sender: peer}, "Lunes", "Sábado")
 		var data PollVoteData
 		_ = json.Unmarshal(got.Data, &data)
-		want := PollVoteData{Question: "¿Cuándo?", Selected: []string{"Sábado", "Lunes"}}
+		want := PollVoteData{
+			Question: "¿Cuándo?",
+			Selected: []string{"Sábado", "Lunes"},
+			Results: []PollResult{
+				{Option: "Sábado", Votes: 1, Voters: []string{peer.User}},
+				{Option: "Domingo", Votes: 0, Voters: []string{}},
+				{Option: "Lunes", Votes: 1, Voters: []string{peer.User}},
+			},
+		}
 		if !reflect.DeepEqual(data, want) {
 			t.Fatalf("vote = %+v, want %+v (poll order)", data, want)
 		}
@@ -181,5 +192,83 @@ func TestSelectedOptionsKeepsThePollsOrderAndCountsStrangers(t *testing.T) {
 	selected, unknown := selectedOptions(options, hashes)
 	if !reflect.DeepEqual(selected, []string{"a", "c"}) || unknown != 1 {
 		t.Fatalf("selected %v, unknown %d", selected, unknown)
+	}
+}
+
+// The tally is each voter's latest pick: a change of mind moves the voter, a withdrawn
+// vote removes them, and a history import arriving late cannot undo a newer live vote.
+func TestPollResultsCountEachVotersLatestPick(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenStore(ctx, "file:"+filepath.Join(t.TempDir(), "bridge.db"), waLog.Noop)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer st.DB.Close()
+
+	at := func(minute int) time.Time { return time.Date(2026, 10, 8, 12, minute, 0, 0, time.UTC) }
+	save := func(voter string, minute int, picks ...string) {
+		if err := st.SaveVote(ctx, "poll", voter, append([]string{}, picks...), at(minute)); err != nil {
+			t.Fatalf("SaveVote: %v", err)
+		}
+	}
+	save("ana", 1, "Sábado")
+	save("bea", 2, "Domingo", "Sábado")
+	save("ana", 3, "Domingo") // changed her mind
+	save("caro", 4, "Lunes")  //
+	save("caro", 5)           // and withdrew
+	save("ana", 0, "Lunes")   // a stale pick from history
+	save("dani", 6, "Martes") // an option the poll does not have
+
+	got, err := st.PollResults(ctx, "poll", []string{"Sábado", "Domingo", "Lunes"})
+	if err != nil {
+		t.Fatalf("PollResults: %v", err)
+	}
+	want := []PollResult{
+		{Option: "Sábado", Votes: 1, Voters: []string{"bea"}},
+		{Option: "Domingo", Votes: 2, Voters: []string{"bea", "ana"}},
+		{Option: "Lunes", Votes: 0, Voters: []string{}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("results = %+v, want %+v", got, want)
+	}
+}
+
+// A history import carries a poll's votes already opened, keyed in the account's own
+// frame: ours, a group member by participant, or — in a DM — the peer.
+func TestSeedVotesNamesEachVoter(t *testing.T) {
+	ctx := context.Background()
+	st, err := OpenStore(ctx, "file:"+filepath.Join(t.TempDir(), "bridge.db"), waLog.Noop)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer st.DB.Close()
+	m := &Manager{store: st, log: waLog.Noop}
+	session := &Session{Address: "5491133585694"}
+	poll := &PollData{Question: "?", Options: []string{"sí", "no"}}
+	update := func(fromMe bool, participant string, picks ...string) *waWeb.PollUpdate {
+		return &waWeb.PollUpdate{
+			PollUpdateMessageKey: &waCommon.MessageKey{FromMe: proto.Bool(fromMe), Participant: proto.String(participant)},
+			Vote:                 &waE2E.PollVoteMessage{SelectedOptions: whatsmeow.HashPollOptions(picks)},
+			SenderTimestampMS:    proto.Int64(1),
+		}
+	}
+
+	group := types.MessageSource{Chat: types.NewJID("120363025580475259", types.GroupServer), IsGroup: true}
+	m.seedVotes(session, group, "gpoll", poll, []*waWeb.PollUpdate{
+		update(true, "", "sí"),
+		update(false, "5492616514662@s.whatsapp.net", "no"),
+	})
+	got, _ := st.PollResults(ctx, "gpoll", poll.Options)
+	if !reflect.DeepEqual(got[0].Voters, []string{session.Address}) || !reflect.DeepEqual(got[1].Voters, []string{"5492616514662"}) {
+		t.Fatalf("group results = %+v", got)
+	}
+
+	peer := types.NewJID("5491199999999", types.DefaultUserServer)
+	m.seedVotes(session, types.MessageSource{Chat: peer, Sender: peer}, "dpoll", poll, []*waWeb.PollUpdate{
+		update(false, "", "sí"),
+	})
+	got, _ = st.PollResults(ctx, "dpoll", poll.Options)
+	if !reflect.DeepEqual(got[0].Voters, []string{peer.User}) {
+		t.Fatalf("dm results = %+v", got)
 	}
 }

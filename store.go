@@ -182,6 +182,18 @@ func finishOpen(ctx context.Context, db *sql.DB, dialect string, log waLog.Logge
 		return nil, fmt.Errorf("create bridge_polls: %w", err)
 	}
 
+	// Each voter's latest pick on a poll, the tally a vote carries.
+	if _, err := db.ExecContext(ctx, `
+		create table if not exists bridge_poll_votes (
+			poll_id  text not null,
+			voter    text not null,
+			selected text not null,
+			voted_at bigint not null,
+			primary key (poll_id, voter)
+		)`); err != nil {
+		return nil, fmt.Errorf("create bridge_poll_votes: %w", err)
+	}
+
 	// Existing databases predate these columns; neither engine has a portable
 	// IF NOT EXISTS for one, so the duplicate-column error is the no-op path.
 	for _, column := range []string{
@@ -279,4 +291,58 @@ func (s *Store) GetPoll(ctx context.Context, externalID string) (*PollData, erro
 		return nil, err
 	}
 	return &poll, nil
+}
+
+// SaveVote records voter's pick on a poll, unless the pick already kept is newer:
+// a history import can arrive after the live votes it predates.
+func (s *Store) SaveVote(ctx context.Context, pollID, voter string, selected []string, at time.Time) error {
+	picks, err := json.Marshal(selected)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.ExecContext(ctx, `
+		insert into bridge_poll_votes (poll_id, voter, selected, voted_at)
+		values ($1, $2, $3, $4)
+		on conflict (poll_id, voter) do update
+		set selected = excluded.selected, voted_at = excluded.voted_at
+		where bridge_poll_votes.voted_at <= excluded.voted_at`,
+		pollID, voter, string(picks), at.UnixMilli())
+	return err
+}
+
+// PollResults tallies the picks kept for a poll, one entry per option in the poll's
+// order, its voters in the order they voted. A pick no option names is not counted.
+func (s *Store) PollResults(ctx context.Context, pollID string, options []string) ([]PollResult, error) {
+	rows, err := s.DB.QueryContext(ctx, `
+		select voter, selected from bridge_poll_votes
+		where poll_id = $1 order by voted_at, voter`,
+		pollID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]PollResult, len(options))
+	index := make(map[string]int, len(options))
+	for i, option := range options {
+		results[i] = PollResult{Option: option, Voters: []string{}}
+		index[option] = i
+	}
+	for rows.Next() {
+		var voter, picks string
+		if err := rows.Scan(&voter, &picks); err != nil {
+			return nil, err
+		}
+		var selected []string
+		if err := json.Unmarshal([]byte(picks), &selected); err != nil {
+			return nil, err
+		}
+		for _, option := range selected {
+			if i, ok := index[option]; ok {
+				results[i].Voters = append(results[i].Voters, voter)
+				results[i].Votes++
+			}
+		}
+	}
+	return results, rows.Err()
 }
