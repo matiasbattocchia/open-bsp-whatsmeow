@@ -425,8 +425,10 @@ func keySender(session *Session, source types.MessageSource, author string, from
 	return chatSegment(session, source)
 }
 
-// parseVcard extracts the fields OpenBSP's ContactData carries (FN and TEL
-// lines) from a vCard blob.
+// parseVcard extracts the fields OpenBSP's ContactData carries from a vCard
+// blob: FN, and every TEL with its number, its `waid` parameter and its first
+// `type`. A property name may carry a group prefix (`item1.TEL`, the shape an
+// iPhone gives a labelled line); the group names nothing and is dropped.
 func parseVcard(displayName, vcard string) ContactData {
 	var contact ContactData
 	contact.Name.FormattedName = displayName
@@ -437,8 +439,11 @@ func parseVcard(displayName, vcard string) ContactData {
 		if !found {
 			continue
 		}
-		key = strings.ToUpper(strings.SplitN(key, ";", 2)[0])
-		switch key {
+		name, params, _ := strings.Cut(key, ";")
+		if _, property, grouped := strings.Cut(name, "."); grouped {
+			name = property
+		}
+		switch strings.ToUpper(name) {
 		case "FN":
 			if contact.Name.FormattedName == "" {
 				contact.Name.FormattedName = value
@@ -450,6 +455,17 @@ func parseVcard(displayName, vcard string) ContactData {
 				Type  string `json:"type,omitempty"`
 			}
 			phone.Phone = value
+			for param := range strings.SplitSeq(params, ";") {
+				k, v, _ := strings.Cut(param, "=")
+				switch strings.ToUpper(k) {
+				case "WAID":
+					phone.WaID = v
+				case "TYPE":
+					if phone.Type == "" {
+						phone.Type = v
+					}
+				}
+			}
 			contact.Phones = append(contact.Phones, phone)
 		}
 	}
