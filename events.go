@@ -361,6 +361,10 @@ func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
 		msg.GetContactMessage().GetContextInfo(),
 		msg.GetContactsArrayMessage().GetContextInfo(),
 		pollCreation(msg).GetContextInfo(),
+		msg.GetButtonsResponseMessage().GetContextInfo(),
+		msg.GetListResponseMessage().GetContextInfo(),
+		msg.GetInteractiveResponseMessage().GetContextInfo(),
+		msg.GetTemplateButtonReplyMessage().GetContextInfo(),
 	} {
 		if ctx.GetStanzaID() != "" {
 			return ctx.GetStanzaID(), ctx.GetParticipant()
@@ -495,6 +499,10 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 	if text == "" {
 		text = evt.Message.GetExtendedTextMessage().GetText()
 	}
+	if text == "" {
+		// a press on a bot's buttons reads as the option it names
+		text, _ = responseText(evt.Message)
+	}
 	if text != "" {
 		body, mentions := mentionsIn(session, evt.Message, whatsappToMarkdown(text))
 		return &MessageContent{
@@ -580,6 +588,15 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 			Options:         options,
 			SelectableCount: poll.GetSelectableOptionsCount(),
 		})
+	}
+
+	if body, choices := interactiveOf(evt.Message); choices != nil {
+		part, err := dataPart("interactive", choices)
+		if err != nil {
+			return nil, err
+		}
+		part.Text = whatsappToMarkdown(body)
+		return part, nil
 	}
 
 	media := inboundMediaInfo(evt.Message)
@@ -894,11 +911,21 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		if evt.Message.GetSenderKeyDistributionMessage() != nil {
 			return
 		}
-		// Everything else is loud on purpose: an inbound message the bridge cannot read
-		// is one the consumer will never hear about, and a wire shape that changes under
-		// us looks exactly like silence until someone goes looking.
-		m.log.Warnf("Skipping unreadable message %s (type %s)", evt.Info.ID, evt.Info.Type)
-		return
+		// A vote on a poll the bridge never saw has nothing to say either.
+		if evt.Message.GetPollUpdateMessage() != nil {
+			m.log.Warnf("Skipping vote %s on a poll never seen", evt.Info.ID)
+			return
+		}
+		// Everything else reaches the consumer as what it is: a message arrived that
+		// the bridge cannot read, named by the fields it carries, so its reader knows
+		// something was said instead of hearing silence.
+		fields := fieldsOf(evt.Message)
+		m.log.Warnf("Unreadable message %s (type %s, fields: %s)", evt.Info.ID, evt.Info.Type, fields)
+		part, err := dataPart("unsupported", map[string]any{"fields": strings.Split(fields, ", ")})
+		if err != nil {
+			return
+		}
+		content = part
 	}
 
 	chat := evt.Info.Chat
@@ -932,6 +959,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		Archived:            archived,
 	}
 	m.rememberPoll(message.ExternalID, content)
+	m.rememberInteractive(message.ExternalID, content)
 
 	// The event's pushname is the AUTHOR's, so it only speaks for the author:
 	// on an echo it is our own name, and lending it to the peer (`live` names

@@ -196,7 +196,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Type {
 	case "message":
-		message, status, err := buildOutgoingMessage(r, session, chat, req)
+		message, status, err := buildOutgoingMessage(r, s.manager.store, session, chat, req)
 		if err != nil {
 			http.Error(w, err.Error(), status)
 			return
@@ -426,7 +426,7 @@ func (s *Session) chatSpeaksLID(chat types.JID) bool {
 // Returns an HTTP status alongside the error: 4xx = permanent, 5xx =
 // transient.
 func buildOutgoingMessage(
-	r *http.Request, session *Session, chat types.JID, req dispatchRequest,
+	r *http.Request, store *Store, session *Session, chat types.JID, req dispatchRequest,
 ) (*waE2E.Message, int, error) {
 	content := req.Record.Content
 
@@ -434,6 +434,10 @@ func buildOutgoingMessage(
 	case "text":
 		if strings.TrimSpace(content.Text) == "" {
 			return nil, http.StatusUnprocessableEntity, fmt.Errorf("text message with empty text")
+		}
+		// a reply to a bot's buttons that names one of them presses it
+		if press, status, err := pressFor(store, session, content); err != nil || press != nil {
+			return press, status, err
 		}
 
 		text := markdownToWhatsApp(content.Text)

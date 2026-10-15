@@ -149,6 +149,16 @@ Working end to end:
   `re_message_id` the poll; each replaces the voter's last, empty =
   withdrawn). A vote reads only on a poll the bridge saw: its choices are
   hashes, matched against the options kept in `bridge_polls`
+- A bot's choices in, and presses out — reply buttons, lists, native-flow
+  buttons and template quick replies read as DataPart kind `interactive` (the
+  body as its text; `form`, `header`, `footer`, `button`, `options` each with
+  `id` and `title`, and `links` for URL and call buttons), kept in
+  `bridge_interactive`. A text whose `re_message_id` is one of them and that
+  names an option by title or id goes out as the response that form expects
+  (buttons, list, native-flow or template reply); naming none of its options
+  is a 422 that lists them
+- A message the bridge cannot read arrives as DataPart kind `unsupported`
+  (`fields`, the protobuf fields it carried) instead of being dropped
 - Replies (`re_message_id` ↔ quoted message) in/out; edits and revokes in
 - Delivery/read receipts in; read receipts + typing indicators out
   (`MarkRead`, `SendChatPresence`)

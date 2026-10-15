@@ -182,6 +182,16 @@ func finishOpen(ctx context.Context, db *sql.DB, dialect string, log waLog.Logge
 		return nil, fmt.Errorf("create bridge_polls: %w", err)
 	}
 
+	// Every message that offered choices, by its external id: an answer to one goes
+	// out in the shape that message expects, naming the option's id.
+	if _, err := db.ExecContext(ctx, `
+		create table if not exists bridge_interactive (
+			external_id text primary key,
+			data        text not null
+		)`); err != nil {
+		return nil, fmt.Errorf("create bridge_interactive: %w", err)
+	}
+
 	// Each voter's latest pick on a poll, the tally a vote carries.
 	if _, err := db.ExecContext(ctx, `
 		create table if not exists bridge_poll_votes (
@@ -291,6 +301,35 @@ func (s *Store) GetPoll(ctx context.Context, externalID string) (*PollData, erro
 		return nil, err
 	}
 	return &poll, nil
+}
+
+// SaveInteractive keeps the choices a message offered (InteractiveData as JSON).
+// A message never changes its choices, so a second sighting keeps the first.
+func (s *Store) SaveInteractive(ctx context.Context, externalID string, data json.RawMessage) error {
+	_, err := s.DB.ExecContext(ctx, `
+		insert into bridge_interactive (external_id, data) values ($1, $2)
+		on conflict (external_id) do nothing`,
+		externalID, string(data))
+	return err
+}
+
+// GetInteractive is the choices kept under externalID, or nil when the bridge
+// never saw that message offer any.
+func (s *Store) GetInteractive(ctx context.Context, externalID string) (*InteractiveData, error) {
+	var raw string
+	err := s.DB.QueryRowContext(ctx,
+		`select data from bridge_interactive where external_id = $1`, externalID).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var data InteractiveData
+	if err := json.Unmarshal([]byte(raw), &data); err != nil {
+		return nil, err
+	}
+	return &data, nil
 }
 
 // SaveVote records voter's pick on a poll, unless the pick already kept is newer:
