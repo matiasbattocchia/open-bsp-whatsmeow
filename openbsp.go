@@ -404,9 +404,10 @@ func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (st
 // SessionEvent notifies whatsapp-web-management of a lifecycle change; the
 // management function owns all onboarding-related DB writes. `connected` is
 // posted on pairing and, with LinkEvents, on every reconnect; `disconnected`
-// only with LinkEvents.
+// only with LinkEvents; `temporary_ban` when WhatsApp bars the number for a
+// while (extra: code, expire in seconds when it says).
 type SessionEvent struct {
-	Event          string `json:"event"` // connected | disconnected | logged_out
+	Event          string `json:"event"` // connected | disconnected | logged_out | temporary_ban
 	OrganizationID string `json:"organization_id"`
 	Address        string `json:"address"`
 	// Empty for the org's shared inbox; set for a personal session.

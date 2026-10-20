@@ -68,6 +68,25 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 			m.log.Errorf("Forget %s failed: %v", session.Address, err)
 		}
 
+	case *events.TemporaryBan:
+		// WhatsApp barred the number for a while: nothing goes in or out until it
+		// lifts, and the receiver should say so rather than call it a drop. Posted
+		// whatever LINK_EVENTS says, like a logout: it is not link noise.
+		m.log.Warnf("Session %s temporarily banned: %v", session.Address, v)
+		extra := map[string]any{"code": int(v.Code)}
+		if v.Expire > 0 {
+			extra["expire"] = int(v.Expire.Seconds())
+		}
+		if err := session.receiver.PostSessionEvent(SessionEvent{
+			Event:          "temporary_ban",
+			OrganizationID: session.OrganizationID,
+			Address:        session.Address,
+			AgentID:        session.AgentID,
+			Extra:          extra,
+		}); err != nil {
+			m.log.Errorf("Notify temporary_ban for %s failed: %v", session.Address, err)
+		}
+
 	case *events.OfflineSyncPreview:
 		if v.Messages > 0 {
 			m.log.Infof("Draining %d queued message(s) for %s", v.Messages, session.Address)
