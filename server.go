@@ -50,6 +50,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /sessions/{address}", s.auth(s.handleSessionStatus))
 	mux.HandleFunc("DELETE /sessions/{address}", s.auth(s.handleLogout))
 	mux.HandleFunc("GET /contacts/{address}", s.auth(s.handleContacts))
+	mux.HandleFunc("GET /profiles/{address}/{peer}", s.auth(s.handleProfile))
 	mux.HandleFunc("POST /groups/{address}", s.auth(s.handleCreateGroup))
 	mux.HandleFunc("GET /groups/{address}/{group}", s.auth(s.handleGroup))
 	mux.HandleFunc("PATCH /groups/{address}/{group}", s.auth(s.handleRenameGroup))
@@ -965,6 +966,55 @@ func (s *Server) handleSessionStatus(w http.ResponseWriter, r *http.Request) {
 // or LID; the address answered is the canonical one every other address the
 // bridge emits is in, so a caller can write to it. One person saved under
 // both keys is one entry.
+// handleProfile answers what WhatsApp shows of a number before anyone writes
+// to it: whether an account answers there, and the name it goes by — a
+// business's verified name, else the push name the session holds for it. A
+// person's push name reaches a session only once they have written, so a
+// stranger's answer may carry no name.
+func (s *Server) handleProfile(w http.ResponseWriter, r *http.Request) {
+	session := s.manager.Get(r.PathValue("address"))
+	if session == nil {
+		http.Error(w, "unknown session", http.StatusNotFound)
+		return
+	}
+	peer := r.PathValue("peer")
+	if peer == "" || strings.Trim(peer, "0123456789") != "" {
+		http.Error(w, fmt.Sprintf("%q is not a phone number: digits only", peer), http.StatusUnprocessableEntity)
+		return
+	}
+	if !session.Client.IsConnected() {
+		http.Error(w, "session not connected", http.StatusServiceUnavailable)
+		return
+	}
+	found, err := session.Client.IsOnWhatsApp(r.Context(), []string{"+" + peer})
+	if err != nil {
+		http.Error(w, err.Error(), sendErrorStatus(err))
+		return
+	}
+	if len(found) == 0 || !found[0].IsIn {
+		writeJSON(w, map[string]any{"on_whatsapp": false})
+		return
+	}
+	name := ""
+	if verified := found[0].VerifiedName; verified != nil && verified.Details != nil {
+		name = strings.TrimSpace(verified.Details.GetVerifiedName())
+	}
+	if name == "" && session.Client.Store.Contacts != nil {
+		for _, jid := range []types.JID{found[0].JID, types.NewJID(peer, types.DefaultUserServer)} {
+			if contact, err := session.Client.Store.Contacts.GetContact(r.Context(), jid.ToNonAD()); err == nil {
+				if name = wireName(contact); name != "" {
+					break
+				}
+			}
+		}
+	}
+	out := map[string]any{"on_whatsapp": true}
+	if name != "" {
+		out["name"] = name
+	}
+	writeJSON(w, out)
+}
+
 func (s *Server) handleContacts(w http.ResponseWriter, r *http.Request) {
 	session := s.manager.Get(r.PathValue("address"))
 	if session == nil {

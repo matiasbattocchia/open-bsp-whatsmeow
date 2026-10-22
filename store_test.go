@@ -290,4 +290,21 @@ func TestContactsLookupAnswersTheBook(t *testing.T) {
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("queryless lookup = HTTP %d, want 422", rec.Code)
 	}
+
+	// a profile is asked of WhatsApp, so what can be refused is refused first:
+	// a number in any spelling but digits, a session nobody holds, and a
+	// session that is not connected (this client never dialled)
+	for path, want := range map[string]int{
+		"/profiles/" + own.User + "/" + url.PathEscape("+5492617078202"): http.StatusUnprocessableEntity,
+		"/profiles/5490000000000/5492617078202":                          http.StatusNotFound,
+		"/profiles/" + own.User + "/5492617078202":                       http.StatusServiceUnavailable,
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer ")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("GET %s = HTTP %d, want %d", path, rec.Code, want)
+		}
+	}
 }
