@@ -74,4 +74,24 @@ func TestLIDOnlyPeerKeepsItsServer(t *testing.T) {
 	if got := addressJID("120363413059075642@g.us"); got.Server != types.GroupServer {
 		t.Errorf("a group address parsed to %s", got)
 	}
+
+	// the client never connected: an answer here came from the store alone
+	if known, err := onWhatsApp(ctx, session, phone); err != nil || !known {
+		t.Errorf("a number with its LID on file: onWhatsApp = %v, %v; want true from the store", known, err)
+	}
+	if known, err := onWhatsApp(ctx, session, unmapped.ToNonAD()); err != nil || !known {
+		t.Errorf("a LID chat: onWhatsApp = %v, %v; want true", known, err)
+	}
+}
+
+// A number reaches WhatsApp as bare digits; any other spelling is refused
+// before the session is asked anything.
+func TestDispatchNumberIsDigits(t *testing.T) {
+	for _, address := range []string{"+542617078202", "54 9 261 707-8202", "(261) 7078202"} {
+		var req dispatchRequest
+		req.Record.ConversationAddress = address
+		if chat, err := dispatchChatJID(req); err == nil {
+			t.Errorf("dispatchChatJID(%q) = %s, want a refusal", address, chat)
+		}
+	}
 }

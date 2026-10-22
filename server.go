@@ -161,12 +161,45 @@ type dispatchRequest struct {
 // Response codes follow the dispatcher's transient/permanent split:
 // 4xx marks the message failed (no retry), 5xx keeps it pending for the
 // dispatch cron.
-func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
+// answerWriter keeps the status and an error's text as they are written.
+type answerWriter struct {
+	http.ResponseWriter
+	status int
+	body   strings.Builder
+}
+
+func (w *answerWriter) WriteHeader(status int) {
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *answerWriter) Write(b []byte) (int, error) {
+	if w.status >= http.StatusBadRequest {
+		w.body.Write(b)
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (s *Server) handleDispatch(rw http.ResponseWriter, r *http.Request) {
 	var req dispatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(rw, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The dispatcher keeps the answer on its row; the log keeps it beside the
+	// session's traffic, and also when the caller hung up before it came.
+	w := &answerWriter{ResponseWriter: rw}
+	defer func() {
+		if w.status < http.StatusBadRequest {
+			return
+		}
+		logf := s.log.Errorf
+		if w.status == http.StatusServiceUnavailable {
+			logf = s.log.Warnf
+		}
+		logf("Dispatch %s %s to %s: %d %s", req.Type, req.Record.ID,
+			req.Record.ConversationAddress, w.status, strings.TrimSpace(w.body.String()))
+	}()
 
 	session := s.manager.Get(req.Record.OrganizationAddress)
 	if session == nil {
@@ -196,6 +229,15 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Type {
 	case "message":
+		known, err := onWhatsApp(r.Context(), session, chat)
+		if err != nil {
+			http.Error(w, err.Error(), sendErrorStatus(err))
+			return
+		}
+		if !known {
+			http.Error(w, "+"+chat.User+" is not on WhatsApp", http.StatusUnprocessableEntity)
+			return
+		}
 		message, status, err := buildOutgoingMessage(r, s.manager.store, session, chat, req)
 		if err != nil {
 			http.Error(w, err.Error(), status)
@@ -807,9 +849,32 @@ func dispatchChatJID(req dispatchRequest) (types.JID, error) {
 		if strings.Contains(addr, "@") {
 			return types.ParseJID(addr)
 		}
+		// WhatsApp leaves a query for a JID it cannot read unanswered, so a
+		// number in any other spelling would hold the send until it times out
+		if strings.Trim(addr, "0123456789") != "" {
+			return types.JID{}, fmt.Errorf("conversation_address %q is not a phone number: digits only, no + or separators", addr)
+		}
 		return addressJID(addr), nil
 	}
 	return types.JID{}, fmt.Errorf("record has no conversation_address")
+}
+
+// onWhatsApp reports whether a direct chat by phone number has an account
+// behind it. A number WhatsApp has answered for has its LID on file; any other
+// is asked, and the answer files its LID, so each number is asked once.
+// Groups and LID chats are WhatsApp's own addresses and pass.
+func onWhatsApp(ctx context.Context, session *Session, chat types.JID) (bool, error) {
+	if chat.Server != types.DefaultUserServer {
+		return true, nil
+	}
+	if lid, err := session.Client.Store.LIDs.GetLIDForPN(ctx, chat); err == nil && !lid.IsEmpty() {
+		return true, nil
+	}
+	found, err := session.Client.IsOnWhatsApp(ctx, []string{"+" + chat.User})
+	if err != nil {
+		return false, err
+	}
+	return len(found) > 0 && found[0].IsIn, nil
 }
 
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
