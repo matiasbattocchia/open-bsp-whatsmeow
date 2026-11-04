@@ -272,6 +272,10 @@ type ContactData struct {
 	Name struct {
 		FormattedName string `json:"formatted_name"`
 		FirstName     string `json:"first_name,omitempty"`
+		LastName      string `json:"last_name,omitempty"`
+		MiddleName    string `json:"middle_name,omitempty"`
+		Prefix        string `json:"prefix,omitempty"`
+		Suffix        string `json:"suffix,omitempty"`
 	} `json:"name"`
 	Phones []struct {
 		Phone string `json:"phone"`

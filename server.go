@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"runtime/debug"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -567,26 +568,70 @@ func buildOutgoingMessage(
 }
 
 func contactToVcard(contact ContactData) *waE2E.ContactMessage {
-	name := contact.Name.FormattedName
-	if name == "" {
-		name = contact.Name.FirstName
-	}
-
-	var vcard strings.Builder
-	vcard.WriteString("BEGIN:VCARD\nVERSION:3.0\nFN:" + name + "\n")
-	for _, phone := range contact.Phones {
-		if phone.WaID != "" {
-			fmt.Fprintf(&vcard, "TEL;type=CELL;waid=%s:%s\n", phone.WaID, phone.Phone)
-		} else {
-			fmt.Fprintf(&vcard, "TEL;type=CELL:%s\n", phone.Phone)
-		}
-	}
-	vcard.WriteString("END:VCARD")
-
+	name, vcard := buildVcard(contact)
 	return &waE2E.ContactMessage{
 		DisplayName: proto.String(name),
-		Vcard:       proto.String(vcard.String()),
+		Vcard:       proto.String(vcard),
 	}
+}
+
+// buildVcard writes a contact as a vCard 3.0 and returns it with the name the
+// card displays. N carries the structured fields when the contact gives any;
+// otherwise the whole name is the given name, so every address book shows it
+// exactly as written, in any name order, and a multi-word surname or a business
+// name is never split.
+func buildVcard(contact ContactData) (name, vcard string) {
+	n := contact.Name
+	name = n.FormattedName
+	if name == "" {
+		name = strings.Join(slices.DeleteFunc(
+			[]string{n.Prefix, n.FirstName, n.MiddleName, n.LastName, n.Suffix},
+			func(part string) bool { return part == "" },
+		), " ")
+	}
+	family, given := n.LastName, n.FirstName
+	if family == "" && given == "" && n.MiddleName == "" && n.Prefix == "" && n.Suffix == "" {
+		given = name
+	}
+
+	var b strings.Builder
+	b.WriteString("BEGIN:VCARD\nVERSION:3.0\n")
+	fmt.Fprintf(&b, "N:%s;%s;%s;%s;%s\n", vcardText(family), vcardText(given),
+		vcardText(n.MiddleName), vcardText(n.Prefix), vcardText(n.Suffix))
+	b.WriteString("FN:" + vcardText(name) + "\n")
+	for _, phone := range contact.Phones {
+		number := strings.Map(dropLineBreak, phone.Phone)
+		waID := strings.Map(keepDigit, phone.WaID)
+		if waID != "" {
+			fmt.Fprintf(&b, "TEL;type=CELL;waid=%s:%s\n", waID, number)
+		} else {
+			fmt.Fprintf(&b, "TEL;type=CELL:%s\n", number)
+		}
+	}
+	b.WriteString("END:VCARD")
+	return name, b.String()
+}
+
+// vcardText escapes a vCard text value: a backslash, comma or semicolon is
+// prefixed with a backslash, and a line break is the two characters `\n`.
+var vcardText = strings.NewReplacer(
+	`\`, `\\`, `,`, `\,`, `;`, `\;`, "\r\n", `\n`, "\n", `\n`, "\r", `\n`,
+).Replace
+
+// dropLineBreak keeps a TEL value on its line; a number needs no other escaping.
+func dropLineBreak(r rune) rune {
+	if r == '\r' || r == '\n' {
+		return -1
+	}
+	return r
+}
+
+// keepDigit reduces a waid parameter to the digits a WhatsApp ID is made of.
+func keepDigit(r rune) rune {
+	if r < '0' || r > '9' {
+		return -1
+	}
+	return r
 }
 
 // WhatsApp per-type upload limits, mirroring whatsapp-dispatcher's table.
