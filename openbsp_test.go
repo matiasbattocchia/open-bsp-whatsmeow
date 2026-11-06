@@ -1,9 +1,43 @@
 package main
 
 import (
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
+
+// An upload's file part says what the medium is, so the receiver files a voice
+// note as audio rather than as nameless bytes; one that says nothing is bytes.
+func TestUploadMediaLabelsThePartWithItsType(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Error(err)
+		}
+		file, header, err := r.FormFile("file")
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(file)
+		got = append(got, header.Header.Get("Content-Type")+" "+header.Filename+" "+string(data))
+		w.Write([]byte(`{"uri":"internal://media/x"}`))
+	}))
+	defer srv.Close()
+	o := NewOpenBSP(&Config{OpenBSPURL: srv.URL, BridgeToken: "t"})
+
+	if _, err := o.UploadMedia("549", "", "audio/ogg; codecs=opus", []byte("OggS")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.UploadMedia("549", `a "b".pdf`, "", []byte("%PDF")); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"audio/ogg; codecs=opus file OggS", `application/octet-stream a "b".pdf %PDF`}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("parts = %q, want %q", got, want)
+	}
+}
 
 // The upload deadline doubles as how long one medium may hold up a session's
 // event stream, so it has to grow with the payload and then stop growing.

@@ -659,7 +659,7 @@ func (m *Manager) buildContent(session *Session, evt *events.Message, downloadMe
 		return placeholder, fmt.Errorf("download media: %w", err)
 	}
 
-	uri, err := session.receiver.UploadMedia(session.Address, media.name, data)
+	uri, err := session.receiver.UploadMedia(session.Address, media.name, media.mime, data)
 	if err != nil {
 		return placeholder, fmt.Errorf("store media: %w", err)
 	}

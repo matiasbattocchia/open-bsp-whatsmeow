@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -333,12 +334,17 @@ func (o *OpenBSP) postJSON(path string, payload []byte) error {
 	return nil
 }
 
+// quoteEscaper escapes a filename for a Content-Disposition, as multipart's
+// own CreateFormFile does.
+var quoteEscaper = strings.NewReplacer("\\", "\\\\", `"`, "\\\"")
+
 // UploadMedia stores decrypted media bytes in OpenBSP storage via the
 // connector webhook's /media route and returns the internal://media/... URI
 // to reference in a FilePart. The bridge holds no storage credentials; the
 // webhook (which has the service key) does the actual upload and enforces
-// the size cap.
-func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (string, error) {
+// the size cap. The part carries the medium's own type, so the receiver
+// names the bytes as what they are; a medium that says none goes as bytes.
+func (o *OpenBSP) UploadMedia(organizationAddress, name, mimeType string, data []byte) (string, error) {
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 
@@ -346,7 +352,15 @@ func (o *OpenBSP) UploadMedia(organizationAddress, name string, data []byte) (st
 	if filename == "" {
 		filename = "file"
 	}
-	part, err := form.CreateFormFile("file", filename)
+	if mimeType == "" {
+		mimeType = "application/octet-stream"
+	}
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", fmt.Sprintf(
+		`form-data; name="file"; filename="%s"`, quoteEscaper.Replace(filename),
+	))
+	header.Set("Content-Type", mimeType)
+	part, err := form.CreatePart(header)
 	if err != nil {
 		return "", err
 	}
