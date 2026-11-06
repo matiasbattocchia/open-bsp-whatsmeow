@@ -81,6 +81,24 @@ func TestBuildVcardStructuredName(t *testing.T) {
 	}
 }
 
+// A card's FN and TEL arrive whole: the escaping its writer added is undone,
+// and a card the bridge writes reads back as the contact it was written from.
+func TestParseVcardUnescapes(t *testing.T) {
+	contact := parseVcard("", "BEGIN:VCARD\nFN:Pérez\\, Juan\\; \\\\Jr\\nII\nTEL;waid=1:+1\\,2\nEND:VCARD\n")
+	if contact.Name.FormattedName != "Pérez, Juan; \\Jr\nII" {
+		t.Fatalf("name = %q", contact.Name.FormattedName)
+	}
+	if contact.Phones[0].Phone != "+1,2" {
+		t.Fatalf("phone = %q", contact.Phones[0].Phone)
+	}
+	var written ContactData
+	written.Name.FormattedName = `Pérez, Juan; "El Gordo" \ II`
+	_, vcard := buildVcard(written)
+	if got := parseVcard("", vcard).Name.FormattedName; got != written.Name.FormattedName {
+		t.Fatalf("round trip = %q", got)
+	}
+}
+
 // The display name the message carries outranks the card's FN, and a card with
 // no TEL line yields a contact with no phones rather than an empty one.
 func TestParseVcardDisplayNameAndNoTel(t *testing.T) {

@@ -451,7 +451,8 @@ func keySender(session *Session, source types.MessageSource, author string, from
 // parseVcard extracts the fields OpenBSP's ContactData carries from a vCard
 // blob: FN, and every TEL with its number, its `waid` parameter and its first
 // `type`. A property name may carry a group prefix (`item1.TEL`, the shape an
-// iPhone gives a labelled line); the group names nothing and is dropped.
+// iPhone gives a labelled line); the group names nothing and is dropped. Values
+// are unescaped as vcardText escapes them, so "Pérez\, Juan" reads "Pérez, Juan".
 func parseVcard(displayName, vcard string) ContactData {
 	var contact ContactData
 	contact.Name.FormattedName = displayName
@@ -466,6 +467,7 @@ func parseVcard(displayName, vcard string) ContactData {
 		if _, property, grouped := strings.Cut(name, "."); grouped {
 			name = property
 		}
+		value = vcardUnescape(value)
 		switch strings.ToUpper(name) {
 		case "FN":
 			if contact.Name.FormattedName == "" {

@@ -618,6 +618,12 @@ var vcardText = strings.NewReplacer(
 	`\`, `\\`, `,`, `\,`, `;`, `\;`, "\r\n", `\n`, "\n", `\n`, "\r", `\n`,
 ).Replace
 
+// vcardUnescape reads a vCard text value back: each backslash pair is one
+// character, read left to right, so `\\,` is a backslash and a comma.
+var vcardUnescape = strings.NewReplacer(
+	`\\`, `\`, `\,`, `,`, `\;`, `;`, `\n`, "\n", `\N`, "\n",
+).Replace
+
 // dropLineBreak keeps a TEL value on its line; a number needs no other escaping.
 func dropLineBreak(r rune) rune {
 	if r == '\r' || r == '\n' {
