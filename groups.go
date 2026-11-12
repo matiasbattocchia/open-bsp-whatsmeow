@@ -186,22 +186,65 @@ func personOf(session *Session, jid, alt types.JID, live string) groupMember {
 	return groupMember{Address: address, Name: name}
 }
 
-// groupChange shapes a change WhatsApp announced for a group: the subject when
-// it moved, the roster when it moved. ok is false when neither did — a
-// description, a setting or an admin seat is not a line the consumer keeps.
-func groupChange(session *Session, v *events.GroupInfo) (change WebhookGroup, ok bool) {
-	change = WebhookGroup{Address: v.JID.String()}
+// groupChange shapes a change WhatsApp announced for a group, every field it
+// moved. ok is false when the notification moved nothing the room's line says,
+// which is a notification about participant versions alone.
+func groupChange(session *Session, v *events.GroupInfo) (change WebhookRoom, ok bool) {
+	change = WebhookRoom{Address: v.JID.String()}
 	if v.Name != nil && v.Name.Name != "" {
 		change.Name = v.Name.Name
 		change.Renamed = true
 	}
-	for _, jid := range v.Join {
-		change.Joined = append(change.Joined, personOf(session, jid, types.JID{}, ""))
+	people := func(jids []types.JID) []groupMember {
+		var out []groupMember
+		for _, jid := range jids {
+			out = append(out, personOf(session, jid, types.JID{}, ""))
+		}
+		return out
 	}
-	for _, jid := range v.Leave {
-		change.Left = append(change.Left, personOf(session, jid, types.JID{}, ""))
+	change.Joined = people(v.Join)
+	change.Left = people(v.Leave)
+	change.Promoted = people(v.Promote)
+	change.Demoted = people(v.Demote)
+	if v.Topic != nil {
+		about := v.Topic.Topic
+		if v.Topic.TopicDeleted {
+			about = ""
+		}
+		change.Description = &about
 	}
-	if !change.Renamed && len(change.Joined) == 0 && len(change.Left) == 0 {
+	if v.Announce != nil {
+		change.Announce = new(v.Announce.IsAnnounce)
+	}
+	if v.Locked != nil {
+		change.Locked = new(v.Locked.IsLocked)
+	}
+	if v.Ephemeral != nil {
+		timer := uint32(0)
+		if v.Ephemeral.IsEphemeral {
+			timer = v.Ephemeral.DisappearingTimer
+		}
+		change.Disappearing = &timer
+	}
+	if v.MembershipApprovalMode != nil {
+		change.Approval = new(v.MembershipApprovalMode.IsJoinApprovalRequired)
+	}
+	change.InviteLink = v.NewInviteLink
+	change.Deleted = v.Delete != nil && v.Delete.Deleted
+	change.Suspended = v.Suspended
+	change.Unsuspended = v.Unsuspended
+	if v.Link != nil {
+		change.Linked = []roomLink{linkOf(v.Link)}
+	}
+	if v.Unlink != nil {
+		change.Unlinked = []roomLink{linkOf(v.Unlink)}
+	}
+	for _, node := range v.UnknownChanges {
+		if node != nil {
+			change.Unknown = append(change.Unknown, node.Tag)
+		}
+	}
+	if !saysSomething(change) {
 		return change, false
 	}
 	change.By = changedBy(session, v.Sender, v.SenderPN)
@@ -212,14 +255,33 @@ func groupChange(session *Session, v *events.GroupInfo) (change WebhookGroup, ok
 	return change, true
 }
 
+// saysSomething is whether a group's change moved anything its line would say.
+func saysSomething(c WebhookRoom) bool {
+	return c.Renamed || len(c.Joined) > 0 || len(c.Left) > 0 || len(c.Promoted) > 0 ||
+		len(c.Demoted) > 0 || c.Description != nil || c.Announce != nil || c.Locked != nil ||
+		c.Disappearing != nil || c.Approval != nil || c.InviteLink != nil || c.Deleted ||
+		c.Suspended || c.Unsuspended || len(c.Linked) > 0 || len(c.Unlinked) > 0 ||
+		len(c.Unknown) > 0
+}
+
+// linkOf is the group a community change names, and how it stands to this one.
+func linkOf(change *types.GroupLinkChange) roomLink {
+	return roomLink{
+		Address: change.Group.JID.String(),
+		Name:    change.Group.Name,
+		Type:    string(change.Type),
+	}
+}
+
 // joinedGroup shapes the account's own arrival in a group. A group made with
-// the account in it arrives whole — its founding roster joined, its creator
-// the one who did it; otherwise the account alone joined, added by the sender,
-// or by nobody when it came in by the group's link.
-func joinedGroup(session *Session, v *events.JoinedGroup) WebhookGroup {
-	change := WebhookGroup{Address: v.JID.String(), Name: v.Name}
+// the account in it arrives whole — created, its founding roster joined, its
+// creator the one who did it; otherwise the account alone joined, added by the
+// sender, or by nobody when it came in by the group's link.
+func joinedGroup(session *Session, v *events.JoinedGroup) WebhookRoom {
+	change := WebhookRoom{Address: v.JID.String(), Name: v.Name}
 	at := time.Time{}
 	if v.Type == "new" {
+		change.Created = true
 		change.Joined = rosterOf(session, &v.GroupInfo)
 		at = v.GroupCreated
 	}

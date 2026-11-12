@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 )
@@ -221,10 +222,84 @@ func TestGroupChange(t *testing.T) {
 	}
 
 	if _, ok := groupChange(&Session{}, &events.GroupInfo{
-		JID: group, Sender: &ana, Timestamp: at, Promote: []types.JID{bea},
-		Topic: &types.GroupTopic{Topic: "about"},
+		JID: group, Timestamp: at, ParticipantVersionID: "2",
 	}); ok {
-		t.Error("an admin seat or a description is no line")
+		t.Error("a notification that moves nothing is no line")
+	}
+}
+
+// Every field a group's change moves rides its line: the admin seats, the
+// about text (deleted is ""), who may send and who may edit, the timer, join
+// approval, the link reset, the group deleted, its community, WhatsApp's own
+// hand, and what whatsmeow could not read, by tag.
+func TestGroupChangeCarriesEveryField(t *testing.T) {
+	group := types.NewJID("120363001234567890", types.GroupServer)
+	community := types.NewJID("120363009999999999", types.GroupServer)
+	ana := types.NewJID("5491100000001", types.DefaultUserServer)
+	bea := types.NewJID("5491100000002", types.DefaultUserServer)
+	link := "https://chat.whatsapp.com/abc"
+
+	change, ok := groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Sender: &ana,
+		Promote:                []types.JID{bea},
+		Topic:                  &types.GroupTopic{Topic: "Sábado 13 h"},
+		Announce:               &types.GroupAnnounce{IsAnnounce: true},
+		Locked:                 &types.GroupLocked{IsLocked: false},
+		Ephemeral:              &types.GroupEphemeral{IsEphemeral: true, DisappearingTimer: 604800},
+		MembershipApprovalMode: &types.GroupMembershipApprovalMode{IsJoinApprovalRequired: true},
+		NewInviteLink:          &link,
+		Link: &types.GroupLinkChange{
+			Type:  types.GroupLinkChangeTypeParent,
+			Group: types.GroupLinkTarget{JID: community, GroupName: types.GroupName{Name: "Barrio"}},
+		},
+	})
+	if !ok || change.By == nil || change.By.Address != "5491100000001" {
+		t.Fatalf("a change: %+v %v", change, ok)
+	}
+	if len(change.Promoted) != 1 || change.Promoted[0].Address != "5491100000002" {
+		t.Errorf("promoted: %+v", change.Promoted)
+	}
+	if change.Description == nil || *change.Description != "Sábado 13 h" {
+		t.Errorf("description: %v", change.Description)
+	}
+	if change.Announce == nil || !*change.Announce || change.Locked == nil || *change.Locked {
+		t.Errorf("announce and locked are what they became: %v %v", change.Announce, change.Locked)
+	}
+	if change.Disappearing == nil || *change.Disappearing != 604800 {
+		t.Errorf("timer: %v", change.Disappearing)
+	}
+	if change.Approval == nil || !*change.Approval || change.InviteLink == nil || *change.InviteLink != link {
+		t.Errorf("approval and link: %v %v", change.Approval, change.InviteLink)
+	}
+	if len(change.Linked) != 1 || change.Linked[0] != (roomLink{
+		Address: "120363009999999999@g.us", Name: "Barrio", Type: "parent_group",
+	}) {
+		t.Errorf("linked: %+v", change.Linked)
+	}
+
+	change, _ = groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Sender: &ana,
+		Topic:     &types.GroupTopic{Topic: "old", TopicDeleted: true},
+		Ephemeral: &types.GroupEphemeral{IsEphemeral: false, DisappearingTimer: 86400},
+	})
+	if change.Description == nil || *change.Description != "" || change.Disappearing == nil || *change.Disappearing != 0 {
+		t.Errorf("a deleted description is empty and a timer off is 0: %+v", change)
+	}
+
+	change, ok = groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Suspended: true,
+		UnknownChanges: []*waBinary.Node{{Tag: "membership_approval_request"}},
+	})
+	if !ok || !change.Suspended || change.By != nil ||
+		len(change.Unknown) != 1 || change.Unknown[0] != "membership_approval_request" {
+		t.Errorf("WhatsApp's own hand, and what nobody could read: %+v", change)
+	}
+
+	change, ok = groupChange(&Session{}, &events.GroupInfo{
+		JID: group, Sender: &ana, Delete: &types.GroupDelete{Deleted: true},
+	})
+	if !ok || !change.Deleted {
+		t.Errorf("deleted: %+v", change)
 	}
 }
 
@@ -243,13 +318,13 @@ func TestJoinedGroup(t *testing.T) {
 		Participants: []types.GroupParticipant{{JID: ana}, {JID: own}},
 	}
 	change := joinedGroup(session, &events.JoinedGroup{Type: "new", Sender: &ana, GroupInfo: info})
-	if change.Name != "ops" || change.Renamed || len(change.Joined) != 2 || change.By == nil ||
+	if change.Name != "ops" || change.Renamed || !change.Created || len(change.Joined) != 2 || change.By == nil ||
 		change.By.Address != "5491100000001" || change.Timestamp != "2026-09-28T12:00:00Z" {
 		t.Errorf("a new group: %+v", change)
 	}
 
 	change = joinedGroup(session, &events.JoinedGroup{Sender: &ana, GroupInfo: info})
-	if len(change.Joined) != 1 || change.Joined[0].Address != "5491100000009" || change.By == nil {
+	if len(change.Joined) != 1 || change.Joined[0].Address != "5491100000009" || change.By == nil || change.Created {
 		t.Errorf("added to a group: %+v", change)
 	}
 

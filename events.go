@@ -107,33 +107,54 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 
 	case *events.GroupInfo:
 		if change, ok := groupChange(session, v); ok {
-			m.postGroupChange(session, change)
+			m.postRoom(session, change)
 		}
 
 	case *events.JoinedGroup:
-		m.postGroupChange(session, joinedGroup(session, v))
+		m.postRoom(session, joinedGroup(session, v))
+
+	case *events.Picture:
+		if change, ok := pictureChange(session, v); ok {
+			m.postRoom(session, change)
+		}
+
+	case *events.Archive, *events.Mute, *events.Pin, *events.MarkChatAsRead,
+		*events.ClearChat, *events.DeleteChat, *events.LabelAssociationChat:
+		if change, ok := viewChange(session, v); ok {
+			m.postRoom(session, change)
+		}
+
+	case *events.LabelEdit:
+		session.rooms.noteLabel(v.LabelID, v.Action.GetName(), v.Action.GetDeleted())
+
+	case *events.AppState:
+		// the bare mutation, which every typed one above also arrives as: only the
+		// lock and the favorites have nothing else to arrive as
+		if change, ok := viewChange(session, v); ok {
+			m.postRoom(session, change)
+		}
+		for _, change := range favoriteChanges(session, v) {
+			m.postRoom(session, change)
+		}
+
+	case *events.Blocklist:
+		if v.Action == events.BlocklistActionModify {
+			m.log.Warnf("Blocklist for %s changed without saying how — no line", session.Address)
+		}
+		for _, change := range blockChanges(session, v) {
+			m.postRoom(session, change)
+		}
+
+	case *events.CallOffer, *events.CallAccept, *events.CallTerminate,
+		*events.CallReject, *events.CallOfferNotice:
+		if change, ok := callChange(session, v); ok {
+			m.postRoom(session, change)
+		}
 
 	case *events.HistorySync:
 		// Runs in its own goroutine: a sync can carry thousands of messages
 		// and must not block the event loop.
 		go m.handleHistorySync(session, v)
-	}
-}
-
-// postGroupChange posts a group's change on the groups feed. A new subject is
-// kept first, so the messages after it carry the name it now has.
-func (m *Manager) postGroupChange(session *Session, change WebhookGroup) {
-	session.noteGroupName(change.Address, change.Name)
-	chat, err := types.ParseJID(change.Address)
-	if err == nil {
-		change.Muted, change.Archived = chatMarks(session, chat, time.Now())
-	}
-	batch := WebhookBatch{
-		OrganizationAddress: session.Address,
-		Groups:              []WebhookGroup{change},
-	}
-	if err := m.outbox.Deliver(session, batch); err != nil {
-		m.log.Errorf("Post group change for %s failed: %v", change.Address, err)
 	}
 }
 
@@ -850,8 +871,9 @@ func (m *Manager) openReaction(
 
 // handleProtocolMessage translates edits and revokes into the webhook's
 // edits/revokes arrays (applied as in-place updates keyed by the ORIGINAL
-// external id). Other protocol messages (app state, key distribution, ...)
-// are internal noise and ignored.
+// external id), and a direct chat's disappearing timer into its room's line.
+// Other protocol messages (app state, key distribution, ...) are internal
+// noise and ignored.
 func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, pm *waE2E.ProtocolMessage) {
 	batch := WebhookBatch{OrganizationAddress: session.Address}
 	key := pm.GetKey()
@@ -887,6 +909,11 @@ func (m *Manager) handleProtocolMessage(session *Session, evt *events.Message, p
 			return
 		}
 		batch.Edits = append(batch.Edits, *edit)
+	case waE2E.ProtocolMessage_EPHEMERAL_SETTING:
+		if change, ok := disappearingChange(session, evt, pm); ok {
+			m.postRoom(session, change)
+		}
+		return
 	default:
 		return
 	}
@@ -1027,7 +1054,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 				session.noteGroupName(chat.String(), info.Name)
 				if err := m.outbox.Deliver(session, WebhookBatch{
 					OrganizationAddress: session.Address,
-					Groups: []WebhookGroup{
+					Rooms: []WebhookRoom{
 						{Address: chat.String(), Name: info.Name},
 					},
 				}); err != nil {

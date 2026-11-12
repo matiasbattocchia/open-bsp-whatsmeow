@@ -62,6 +62,10 @@ type Session struct {
 	// decides which namespace an outbound mention must speak.
 	addrMu   sync.Mutex
 	addrMode map[string]types.AddressingMode
+
+	// What a room's line needs from events before it: calls ringing, label
+	// names, the favorites list (rooms.go).
+	rooms roomMemory
 }
 
 // noteAddressingMode records what namespace a chat addresses people in.

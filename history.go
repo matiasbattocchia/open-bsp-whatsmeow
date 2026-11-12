@@ -51,7 +51,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 
 	pending := WebhookBatch{OrganizationAddress: session.Address, History: true}
 	flush := func() {
-		if len(pending.Messages) == 0 {
+		if len(pending.Messages) == 0 && len(pending.Rooms) == 0 {
 			return
 		}
 		if err := m.outbox.Deliver(session, pending); err != nil {
@@ -137,6 +137,21 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			if len(pending.Messages) >= historyBatchSize {
 				flush()
 			}
+		}
+
+		// The view the chat had at linking, after its messages: the full app-state
+		// sync that holds it announces nothing (rooms.go).
+		address, ok := chatAddress(session, chat)
+		if !ok {
+			continue
+		}
+		if view, ok := historyView(address, conversation, time.Now()); ok {
+			if chat.Server == types.GroupServer {
+				view.Name = conversation.GetName()
+			} else if session.Client != nil && session.Client.Store != nil {
+				view.Name, _ = contactName(session, address, "")
+			}
+			pending.Rooms = append(pending.Rooms, view)
 		}
 	}
 	flush()

@@ -192,15 +192,38 @@ Also working: group subjects → conversation names (on first sight and on
 renames), history sync import (messages + pushnames, chunked), LID → phone
 canonicalization for contact addresses.
 
-Group changes ride the batch's `groups` feed: `{address, name}` for the
-subject a group is first seen with, and a change as WhatsApp announced it —
-`renamed: true` with the new `name`, `joined`/`left: [{address, name?}]`
-(canonical digits), `by` who made it (absent when someone came in by the
-group's link, `reason: "invite"`), `timestamp`, and the chat's
-`muted`/`archived` marks. The account's own
-arrival is one too: added to a group, it alone joined; a group made with it
-in, the whole founding roster, `by` its creator. OpenBSP applies the subject
-and reads nothing else of an entry.
+What a chat says about itself rather than in it rides the batch's `rooms`
+feed, a group's or a direct chat's: `{address, name}` alone for the subject a
+group is first seen with, and otherwise a line, with `timestamp`, `by` who did
+it (canonical digits; absent when WhatsApp itself did, and on the account's own
+`view`), and `name`, the room's name now. People are `[{address, name?}]`.
+
+- A group's change, every field WhatsApp announced: `renamed: true` with the
+  new `name` and `was`, the subject before, when the bridge knew it;
+  `created: true` with the founding roster `joined`; `joined`/`left`
+  (`reason: "invite"` for a join by the group's link, with no `by`);
+  `promoted`/`demoted`; `description` (`""` deleted); `announce` (only admins
+  send), `locked` (only admins edit the info), `disappearing` (seconds, 0 off),
+  `approval` (joining needs an admin), `invite_link` (the link, reset);
+  `deleted`, `suspended`, `unsuspended`; `linked`/`unlinked:
+  [{address, name, type}]` (`parent_group`, `sub_group`, `sibling_group`);
+  `picture: "set" | "removed"`; `unknown: [tag]`, a change whatsmeow could not
+  read. The account's own arrival is one too: added to a group, it alone
+  joined; a group made with it in, created, `by` its creator.
+- A direct chat's `disappearing` timer, by whoever set it.
+- `call: {state, kind, seconds}`: a call offered to the account is one line
+  when it is over, `ended` (seconds from its answer), `missed` or `rejected`;
+  a group call is `started` when it is offered.
+- `view`, how the account's own app shows the chat, from app state:
+  `archived`, `muted` (`until`, RFC 3339, unless it is for always), `pinned`,
+  `read`, `cleared`, `deleted`, `blocked` (in the contact's direct chat),
+  `locked`, `favorite`, `labels: {added, removed}` (a label's name once an edit
+  has named it this process lifetime, else its id). A chat's view at linking
+  comes with the history import, one line per chat that has one.
+
+Every line carries the chat's `muted`/`archived` marks, as a message does,
+except the one that archives or mutes the chat or lifts it: that line is the
+news of the silence.
 
 ## Development
 

@@ -93,29 +93,109 @@ type WebhookBatch struct {
 	Messages []WebhookMessage `json:"messages,omitempty"`
 	Statuses []WebhookStatus  `json:"statuses,omitempty"`
 	Contacts []WebhookContact `json:"contacts,omitempty"`
-	Groups   []WebhookGroup   `json:"groups,omitempty"`
+	Rooms    []WebhookRoom    `json:"rooms,omitempty"`
 	Edits    []WebhookEdit    `json:"edits,omitempty"`
 	Revokes  []WebhookRevoke  `json:"revokes,omitempty"`
 }
 
-// WebhookGroup carries group metadata; the webhook applies Name to the
-// matching conversation. A change WhatsApp announced rides here too: Renamed
-// marks Name as the subject just set, Joined were added or came in, Left went
-// out or were taken out, By made the change (absent when the joiner came in
-// by the group's link, Reason "invite"), at Timestamp. All are empty on the
-// subject a group was first seen with. Muted and Archived are the chat's
-// marks then, as on a message.
-type WebhookGroup struct {
-	Address   string        `json:"address"`
-	Name      string        `json:"name,omitempty"`
-	Renamed   bool          `json:"renamed,omitempty"`
-	Joined    []groupMember `json:"joined,omitempty"`
-	Left      []groupMember `json:"left,omitempty"`
-	By        *groupMember  `json:"by,omitempty"`
-	Reason    string        `json:"reason,omitempty"`
-	Timestamp string        `json:"timestamp,omitempty"`
-	Muted     bool          `json:"muted,omitempty"`
-	Archived  bool          `json:"archived,omitempty"`
+// WebhookRoom is a chat's line about itself, a group's or a direct chat's: the
+// name it wears, and a change as WhatsApp announced it. Only the address and
+// the name are set on the subject a group was first seen with, which names the
+// conversation and is no line.
+//
+// A group's change: Renamed marks Name as the subject just set and Was the one
+// before, when the bridge knew it; Created a group made with the account in
+// it, its founding roster Joined. Joined were added or came in, Left went out
+// or were taken out, Promoted and Demoted gained or lost an admin seat. By made
+// the change: absent when the joiner came in by the group's link (Reason
+// "invite") and when WhatsApp itself did it. Description is the group's about
+// text, "" when deleted; Announce whether only admins may send, Locked whether
+// only admins may edit the group's info, Disappearing the message timer in
+// seconds (0 is off, and a direct chat's timer rides here too), Approval
+// whether joining needs an admin's yes. InviteLink is the link just reset,
+// Deleted the group gone, Suspended and Unsuspended WhatsApp's own hand.
+// Linked and Unlinked are groups tied to this one or cut from it, Type in
+// WhatsApp's words (parent_group, the community it joined; sub_group;
+// sibling_group). Picture is "set" or "removed". Unknown names, by tag, a change
+// whatsmeow could not read, so none passes in silence.
+//
+// Call is a call in the chat: started (a group call), ended, missed or
+// rejected, its kind and, once ended, its length. View is how the account's
+// own app shows the chat, changed on the phone; nobody else in it sees that.
+//
+// Timestamp is when the change happened. Muted and Archived are the chat's
+// marks then, as on a message, on every line but the one that archives or
+// mutes the chat or lifts it: that line is the news of the silence, and a
+// silenced line would hide it.
+type WebhookRoom struct {
+	Address      string        `json:"address"`
+	Name         string        `json:"name,omitempty"`
+	Renamed      bool          `json:"renamed,omitempty"`
+	Was          string        `json:"was,omitempty"`
+	Created      bool          `json:"created,omitempty"`
+	Joined       []groupMember `json:"joined,omitempty"`
+	Left         []groupMember `json:"left,omitempty"`
+	Promoted     []groupMember `json:"promoted,omitempty"`
+	Demoted      []groupMember `json:"demoted,omitempty"`
+	By           *groupMember  `json:"by,omitempty"`
+	Reason       string        `json:"reason,omitempty"`
+	Description  *string       `json:"description,omitempty"`
+	Announce     *bool         `json:"announce,omitempty"`
+	Locked       *bool         `json:"locked,omitempty"`
+	Disappearing *uint32       `json:"disappearing,omitempty"`
+	Approval     *bool         `json:"approval,omitempty"`
+	InviteLink   *string       `json:"invite_link,omitempty"`
+	Deleted      bool          `json:"deleted,omitempty"`
+	Suspended    bool          `json:"suspended,omitempty"`
+	Unsuspended  bool          `json:"unsuspended,omitempty"`
+	Linked       []roomLink    `json:"linked,omitempty"`
+	Unlinked     []roomLink    `json:"unlinked,omitempty"`
+	Picture      string        `json:"picture,omitempty"`
+	Unknown      []string      `json:"unknown,omitempty"`
+	Call         *roomCall     `json:"call,omitempty"`
+	View         *roomView     `json:"view,omitempty"`
+	Timestamp    string        `json:"timestamp,omitempty"`
+	Muted        bool          `json:"muted,omitempty"`
+	Archived     bool          `json:"archived,omitempty"`
+}
+
+// roomLink is another group tied to this one.
+type roomLink struct {
+	Address string `json:"address"`
+	Name    string `json:"name,omitempty"`
+	Type    string `json:"type,omitempty"`
+}
+
+// roomCall is a call as the chat saw it: State started, ended, missed or
+// rejected; Kind audio or video; Seconds from its answer to its end.
+type roomCall struct {
+	State   string `json:"state"`
+	Kind    string `json:"kind,omitempty"`
+	Seconds int    `json:"seconds,omitempty"`
+}
+
+// roomView is the account's own view of a chat, each field present only when
+// it moved: archived, muted (Until when the mute ends, if it does), pinned to
+// the top, read or unread, cleared, deleted from the list, the peer blocked,
+// locked behind the phone's lock, a favorite, and the Business labels put on
+// or taken off.
+type roomView struct {
+	Archived *bool       `json:"archived,omitempty"`
+	Muted    *bool       `json:"muted,omitempty"`
+	Until    string      `json:"until,omitempty"`
+	Pinned   *bool       `json:"pinned,omitempty"`
+	Read     *bool       `json:"read,omitempty"`
+	Cleared  bool        `json:"cleared,omitempty"`
+	Deleted  bool        `json:"deleted,omitempty"`
+	Blocked  *bool       `json:"blocked,omitempty"`
+	Locked   *bool       `json:"locked,omitempty"`
+	Favorite *bool       `json:"favorite,omitempty"`
+	Labels   *roomLabels `json:"labels,omitempty"`
+}
+
+type roomLabels struct {
+	Added   []string `json:"added,omitempty"`
+	Removed []string `json:"removed,omitempty"`
 }
 
 type WebhookMessage struct {
@@ -132,7 +212,7 @@ type WebhookMessage struct {
 	// otherwise), ConversationName the group's subject or — for a direct
 	// chat — the peer's name. Both empty when nobody has ever named them,
 	// and both absent for the account's own messages, which need no name.
-	// A consumer keeping its own contact entity (the contacts/groups feeds
+	// A consumer keeping its own contact entity (the contacts/rooms feeds
 	// below) can ignore these; one without a directory needs them, since
 	// the pushname is otherwise knowable only while the sender is speaking.
 	SenderName       string `json:"sender_name,omitempty"`
