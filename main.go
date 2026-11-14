@@ -11,6 +11,7 @@ import (
 
 	"go.mau.fi/whatsmeow/store"
 	waLog "go.mau.fi/whatsmeow/util/log"
+	"google.golang.org/protobuf/proto"
 )
 
 // The name the phone lists under Linked devices — whatsmeow's default is its
@@ -22,6 +23,14 @@ func init() {
 	store.SetOSInfo(envOr("DEVICE_NAME", "OpenBSP"), [3]uint32{0, 1, 0})
 }
 
+// askHistory sets the history a pairing asks the phone for: a full sync,
+// reaching back this many days. It rides DeviceProps beside the device name,
+// so it too is fixed at pairing time.
+func askHistory(days uint32) {
+	store.DeviceProps.RequireFullSync = proto.Bool(true)
+	store.DeviceProps.HistorySyncConfig.FullSyncDaysLimit = proto.Uint32(days)
+}
+
 func main() {
 	log := waLog.Stdout("bridge", envOr("LOG_LEVEL", "INFO"), true)
 
@@ -30,6 +39,7 @@ func main() {
 		log.Errorf("Config: %v", err)
 		os.Exit(1)
 	}
+	askHistory(cfg.HistoryDays)
 
 	ctx := context.Background()
 

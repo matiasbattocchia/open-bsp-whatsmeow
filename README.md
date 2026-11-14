@@ -49,6 +49,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 | `LISTEN_ADDR`   | no       | Default `:$PORT` (PaaS convention) or `:8081`            |
 | `LOG_LEVEL`     | no       | Default `INFO`                                           |
 | `LINK_EVENTS`   | no       | `true` also posts a paired session's link state to the management function: `disconnected` when its socket drops, `connected` when whatsmeow has it back. Default `false` — OpenBSP's management function accepts only the pairing `connected` and `logged_out` |
+| `HISTORY_DAYS`  | no       | How many days of history a pairing asks the phone for, as a full sync. Default `60`. The request rides the pairing, so a number already paired keeps what it got |
 
 OpenBSP side (`supabase/functions/.env`): set `WHATSAPP_WEB_URL` to this
 service's base URL and `WHATSAPP_WEB_TOKEN` to the same token.
@@ -175,8 +176,24 @@ Parity notes vs the `whatsapp` (Cloud API) service:
   encodes direction (sender == own) and the group participant, so
   reactions and quotes reconstruct the full WhatsApp MessageKey with no
   OpenBSP lookup — including quotes in groups.
-- WhatsApp Status (stories) and newsletters are dropped — they are not
-  conversations.
+- WhatsApp Status (stories) is dropped: it is no conversation.
+- A channel (newsletter, `<id>@newsletter`) the account owns or administers
+  is a conversation at its JID, by the role whatsmeow reads off the channel's
+  metadata. Its posts are the account's own, stamped with the session's
+  number and an explicit `sent` status, and carry no reactions: followers are
+  anonymous. A channel the account only follows is dropped, in live
+  traffic, history and the rooms feed.
+- A broadcast list is a conversation at its JID, `<id>@broadcast`, live and
+  in history. A message somebody sent the account through their list keeps
+  the list's address, with the author as `sender_address`; the phone shows it
+  in the direct chat with them, and its `muted`/`archived` are that chat's.
+- A group's message carries the group's facts: `conversation_members`, how
+  many are in it; `conversation_admin`, true when the account is an admin or
+  super-admin there; `conversation_community`, the name of the community it
+  belongs to. They are read with the group's info, kept, and read again when
+  WhatsApp announces a change to the group. Edits carry them too, and a
+  group's line on the rooms feed carries them as `members`, `admin` and
+  `community`.
 - History media is imported as metadata only (old media is frequently gone
   from WhatsApp's CDN): FileParts without a URI render as unavailable
   attachments. History rows always carry explicit final statuses — never
@@ -189,8 +206,9 @@ Parity notes vs the `whatsapp` (Cloud API) service:
   phone number, which is a different address.
 
 Also working: group subjects → conversation names (on first sight and on
-renames), history sync import (messages + pushnames, chunked), LID → phone
-canonicalization for contact addresses.
+renames), history sync import (messages + pushnames, chunked; a pairing asks
+for a full sync of `HISTORY_DAYS`), LID → phone canonicalization for contact
+addresses.
 
 What a chat says about itself rather than in it rides the batch's `rooms`
 feed, a group's or a direct chat's: `{address, name}` alone for the subject a

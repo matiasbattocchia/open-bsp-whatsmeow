@@ -1,12 +1,41 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
+
+// A group's facts are fields of their own beside the ones a consumer already
+// reads, and a chat that has none leaves them out.
+func TestGroupFactsRideAsFieldsOfTheirOwn(t *testing.T) {
+	message, _ := json.Marshal(WebhookMessage{
+		ConversationAddress:   "120363001234567890@g.us",
+		ConversationMembers:   312,
+		ConversationAdmin:     true,
+		ConversationCommunity: "Obra",
+	})
+	for _, field := range []string{
+		`"conversation_members":312`, `"conversation_admin":true`, `"conversation_community":"Obra"`,
+	} {
+		if !strings.Contains(string(message), field) {
+			t.Errorf("message lacks %s: %s", field, message)
+		}
+	}
+	room, _ := json.Marshal(WebhookRoom{Address: "120363001234567890@g.us", Members: 40, Community: "Obra"})
+	if !strings.Contains(string(room), `"members":40`) || !strings.Contains(string(room), `"community":"Obra"`) ||
+		strings.Contains(string(room), `"admin"`) {
+		t.Errorf("room: %s", room)
+	}
+	direct, _ := json.Marshal(WebhookMessage{ConversationAddress: "5491100000001"})
+	if strings.Contains(string(direct), "conversation_members") || strings.Contains(string(direct), "conversation_community") {
+		t.Errorf("a direct chat carries no group facts: %s", direct)
+	}
+}
 
 // An upload's file part says what the medium is, so the receiver files a voice
 // note as audio rather than as nameless bytes; one that says nothing is bytes.

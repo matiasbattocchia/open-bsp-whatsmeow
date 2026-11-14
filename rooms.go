@@ -48,15 +48,19 @@ type ringing struct {
 // ends every call it offers, so one still ringing after this lost its end.
 const CALL_MEMORY = 24 * time.Hour
 
-// chatAddress is a chat as the feeds address it: a group's JID, a person's
-// canonical digits. ok is false for what is no conversation here — Status and
-// newsletters are dropped wherever they appear.
+// chatAddress is a chat as the feeds address it: the JID of a group, a
+// broadcast list or a channel, a person's canonical digits. ok is false for
+// what is no conversation here — Status, and a channel the account only
+// follows, are dropped wherever they appear.
 func chatAddress(session *Session, jid types.JID) (address string, ok bool) {
 	jid = jid.ToNonAD()
-	if jid.IsEmpty() || jid == types.StatusBroadcastJID || jid.Server == types.NewsletterServer {
+	if jid.IsEmpty() || jid == types.StatusBroadcastJID {
 		return "", false
 	}
-	if jid.Server == types.GroupServer {
+	if isChannel(jid) && !runsChannel(session, jid) {
+		return "", false
+	}
+	if chatByJID(types.MessageSource{Chat: jid}) {
 		return jid.String(), true
 	}
 	return canonicalUser(session, jid, types.JID{}), true
@@ -343,12 +347,21 @@ func (m *Manager) postRoom(session *Session, room WebhookRoom) {
 		}
 	case room.Name == "" && group:
 		room.Name = session.groupName(room.Address)
+	case room.Name == "" && err == nil && isChannel(chat):
+		room.Name = session.channelName(room.Address)
 	case room.Name == "" && session.Client != nil && session.Client.Store != nil:
 		// a direct chat is its peer, and the peer's name names it
 		room.Name, _ = contactName(session, room.Address, "")
 	}
 	if group {
 		session.noteGroupName(room.Address, room.Name)
+		// read after the rename has kept the subject it replaces
+		if facts, ok := groupOf(session, chat); ok {
+			stampRoom(session, &room, facts)
+			if room.Name == "" {
+				room.Name = session.groupName(room.Address)
+			}
+		}
 	}
 	if !silences(room) {
 		room.Muted, room.Archived = chatMarks(session, addressJID(room.Address), time.Now())

@@ -126,7 +126,9 @@ type WebhookBatch struct {
 // Timestamp is when the change happened. Muted and Archived are the chat's
 // marks then, as on a message, on every line but the one that archives or
 // mutes the chat or lifts it: that line is the news of the silence, and a
-// silenced line would hide it.
+// silenced line would hide it. A group's line carries what its messages say
+// of the group: Members, how many are in it; Admin, the account an admin or
+// super-admin there; Community, the name of the community it belongs to.
 type WebhookRoom struct {
 	Address      string        `json:"address"`
 	Name         string        `json:"name,omitempty"`
@@ -157,6 +159,9 @@ type WebhookRoom struct {
 	Timestamp    string        `json:"timestamp,omitempty"`
 	Muted        bool          `json:"muted,omitempty"`
 	Archived     bool          `json:"archived,omitempty"`
+	Members      int           `json:"members,omitempty"`
+	Admin        bool          `json:"admin,omitempty"`
+	Community    string        `json:"community,omitempty"`
 }
 
 // roomLink is another group tied to this one.
@@ -221,8 +226,15 @@ type WebhookMessage struct {
 	// the author, not the author's own. A pushname or a business name is the
 	// sender's to choose; a saved name is the principal's, and the consumer
 	// renders whose word it reads.
-	SenderSaved bool           `json:"sender_saved,omitempty"`
-	Content     MessageContent `json:"content"`
+	SenderSaved bool `json:"sender_saved,omitempty"`
+	// What a group's message says of the group when it arrived: how many
+	// members it has, whether the account is an admin or super-admin there,
+	// and the name of the community it belongs to. Absent on every other
+	// chat, and while the bridge cannot read the group.
+	ConversationMembers   int            `json:"conversation_members,omitempty"`
+	ConversationAdmin     bool           `json:"conversation_admin,omitempty"`
+	ConversationCommunity string         `json:"conversation_community,omitempty"`
+	Content               MessageContent `json:"content"`
 	// Omitted for live messages (arms OpenBSP automation via the pending
 	// default); explicit for history/echoes so they stay inert.
 	Status    map[string]any `json:"status,omitempty"`
@@ -264,9 +276,12 @@ type WebhookEdit struct {
 	Timestamp string    `json:"timestamp"`
 	// The chat's state on arrival (see WebhookMessage) — an edit is its own
 	// event, so it carries the state too: else an edit in a muted chat would
-	// wake what the chat cannot.
-	Muted    bool `json:"muted,omitempty"`
-	Archived bool `json:"archived,omitempty"`
+	// wake what the chat cannot. The group's facts ride for the same reason.
+	Muted                 bool   `json:"muted,omitempty"`
+	Archived              bool   `json:"archived,omitempty"`
+	ConversationMembers   int    `json:"conversation_members,omitempty"`
+	ConversationAdmin     bool   `json:"conversation_admin,omitempty"`
+	ConversationCommunity string `json:"conversation_community,omitempty"`
 }
 
 type WebhookRevoke struct {

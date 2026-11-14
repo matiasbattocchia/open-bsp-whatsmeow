@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,165 @@ type groupView struct {
 	Address string        `json:"address"`
 	Name    string        `json:"name,omitempty"`
 	Members []groupMember `json:"members"`
+}
+
+// groupFacts is what every line of a group says of it: how many are in it,
+// whether the account is an admin or super-admin there, and the JID of the
+// community it belongs to ("" when none).
+type groupFacts struct {
+	members int
+	admin   bool
+	parent  string
+}
+
+// factsOf reads a group's facts off its info. own names the account by the user
+// part of each JID it goes by, number and LID. WhatsApp counts a big group's
+// members in its size and may list only some of them, its admins among them.
+func factsOf(info *types.GroupInfo, own ...string) groupFacts {
+	facts := groupFacts{members: max(info.ParticipantCount, len(info.Participants))}
+	for _, p := range info.Participants {
+		if (p.IsAdmin || p.IsSuperAdmin) && isOwn(p, own) {
+			facts.admin = true
+		}
+	}
+	if !info.LinkedParentJID.IsEmpty() {
+		facts.parent = info.LinkedParentJID.ToNonAD().String()
+	}
+	return facts
+}
+
+// isOwn is whether a seat is the account's, under any JID it goes by.
+func isOwn(p types.GroupParticipant, own []string) bool {
+	for _, user := range own {
+		if user != "" && (p.JID.User == user || p.PhoneNumber.User == user || p.LID.User == user) {
+			return true
+		}
+	}
+	return false
+}
+
+// ownUsers is the user part of each JID the account goes by: its number, and
+// its LID once the device knows it.
+func ownUsers(session *Session) []string {
+	own := []string{session.Address}
+	if session.Client != nil && session.Client.Store != nil {
+		if id := session.Client.Store.ID; id != nil {
+			own = append(own, id.User)
+		}
+		own = append(own, session.Client.Store.LID.User)
+	}
+	return own
+}
+
+// GROUP_READ bounds a read of a group's info. A line waits for it, since every
+// line of a group carries the group's facts, and a line whose group cannot be
+// read in time goes without them.
+const GROUP_READ = 10 * time.Second
+
+// groupReader reads a group's info off the wire: Client.GetGroupInfo.
+type groupReader func(ctx context.Context, jid types.JID) (*types.GroupInfo, error)
+
+// readGroup answers a group's facts: kept from the last read, else read now and
+// kept. The read names the group and, when it sits in a community the bridge
+// has not named yet, reads the community's subject too. ok is false when the
+// group cannot be read.
+func readGroup(session *Session, jid types.JID, read groupReader) (groupFacts, bool) {
+	address := jid.ToNonAD().String()
+	if facts, ok := session.cachedGroup(address); ok {
+		return facts, true
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), GROUP_READ)
+	defer cancel()
+	info, err := read(ctx, jid.ToNonAD())
+	if err != nil || info == nil {
+		return groupFacts{}, false
+	}
+	facts := session.noteGroup(info, ownUsers(session)...)
+	if facts.parent != "" && session.groupName(facts.parent) == "" {
+		if parent, err := types.ParseJID(facts.parent); err == nil {
+			if community, err := read(ctx, parent); err == nil && community != nil {
+				session.noteGroupName(facts.parent, community.Name)
+			}
+		}
+	}
+	return facts, true
+}
+
+// groupOf is readGroup over the session's own connection.
+func groupOf(session *Session, jid types.JID) (groupFacts, bool) {
+	if facts, ok := session.cachedGroup(jid.ToNonAD().String()); ok || session.Client == nil {
+		return facts, ok
+	}
+	return readGroup(session, jid, session.Client.GetGroupInfo)
+}
+
+// readAllGroups reads every group the account is in at once, for the history
+// import: one query, where a group at a time would be hundreds. A community
+// the list does not name is read on its own.
+func readAllGroups(session *Session, list func(context.Context) ([]*types.GroupInfo, error), read groupReader) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 6*GROUP_READ)
+	defer cancel()
+	infos, err := list(ctx)
+	if err != nil {
+		return err
+	}
+	own := ownUsers(session)
+	parents := map[string]bool{}
+	for _, info := range infos {
+		if info == nil {
+			continue
+		}
+		if facts := session.noteGroup(info, own...); facts.parent != "" {
+			parents[facts.parent] = true
+		}
+	}
+	for parent := range parents {
+		if session.groupName(parent) != "" {
+			continue
+		}
+		if jid, err := types.ParseJID(parent); err == nil {
+			if community, err := read(ctx, jid); err == nil && community != nil {
+				session.noteGroupName(parent, community.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// readGroups is readAllGroups over the session's own connection, once a
+// process: a group joined since is read on its own by its first line.
+func (m *Manager) readGroups(session *Session) {
+	if session.Client == nil {
+		return
+	}
+	session.groupsRead.Do(func() {
+		err := readAllGroups(session, session.Client.GetJoinedGroups, session.Client.GetGroupInfo)
+		if err != nil {
+			m.log.Warnf("Reading the groups of %s failed: %v — the history import goes without their facts",
+				session.Address, err)
+		}
+	})
+}
+
+// stampGroup puts a group's facts on a message bound for the feed.
+func stampGroup(session *Session, message *WebhookMessage, facts groupFacts) {
+	message.ConversationMembers = facts.members
+	message.ConversationAdmin = facts.admin
+	message.ConversationCommunity = session.groupName(facts.parent)
+}
+
+// stampEdit puts a group's facts on an edit.
+func stampEdit(session *Session, edit *WebhookEdit, facts groupFacts) {
+	edit.ConversationMembers = facts.members
+	edit.ConversationAdmin = facts.admin
+	edit.ConversationCommunity = session.groupName(facts.parent)
+}
+
+// stampRoom puts a group's facts on a room's line.
+func stampRoom(session *Session, room *WebhookRoom, facts groupFacts) {
+	room.Members = facts.members
+	room.Admin = facts.admin
+	room.Community = session.groupName(facts.parent)
 }
 
 // groupSession answers the session a group route acts on, or writes the

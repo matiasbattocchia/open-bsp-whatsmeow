@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -331,5 +332,147 @@ func TestJoinedGroup(t *testing.T) {
 	change = joinedGroup(session, &events.JoinedGroup{Reason: "invite", GroupInfo: info})
 	if change.By != nil || change.Reason != "invite" || change.Joined[0].Address != "5491100000009" {
 		t.Errorf("in by the link: %+v", change)
+	}
+}
+
+// A group's facts: its size as WhatsApp counts it, which a big group's partial
+// list would undercount; the account an admin under either of its JIDs; and the
+// community it sits in.
+func TestFactsOf(t *testing.T) {
+	community := types.NewJID("120363000000000001", types.GroupServer)
+	info := &types.GroupInfo{
+		JID:               types.NewJID("120363001234567890", types.GroupServer),
+		ParticipantCount:  312,
+		GroupLinkedParent: types.GroupLinkedParent{LinkedParentJID: community},
+		Participants: []types.GroupParticipant{
+			{JID: types.NewJID("5491100000001", types.DefaultUserServer), IsSuperAdmin: true},
+			{
+				JID:         types.NewJID("168723612700722", types.HiddenUserServer),
+				PhoneNumber: types.NewJID("5491100000009", types.DefaultUserServer),
+				IsAdmin:     true,
+			},
+		},
+	}
+	facts := factsOf(info, "5491100000009")
+	if facts.members != 312 || !facts.admin || facts.parent != "120363000000000001@g.us" {
+		t.Errorf("by number: %+v", facts)
+	}
+	if facts := factsOf(info, "5491100000007", "168723612700722"); !facts.admin {
+		t.Errorf("an admin seat held under the LID is the account's too: %+v", facts)
+	}
+	if facts := factsOf(info, "5491100000007"); facts.admin {
+		t.Errorf("somebody else's admin seat is not the account's: %+v", facts)
+	}
+
+	small := &types.GroupInfo{
+		JID: types.NewJID("120363001234567891", types.GroupServer),
+		Participants: []types.GroupParticipant{
+			{JID: types.NewJID("5491100000001", types.DefaultUserServer), IsAdmin: true},
+			{JID: types.NewJID("5491100000009", types.DefaultUserServer)},
+		},
+	}
+	if facts := factsOf(small, "5491100000009"); facts.members != 2 || facts.admin || facts.parent != "" {
+		t.Errorf("a plain seat in a group of two, in no community: %+v", facts)
+	}
+}
+
+// A group is read once and kept: its facts, its subject, and its community's
+// subject, read with it. A change forgets the facts, and the next line reads
+// them again; a group that cannot be read keeps nothing.
+func TestReadGroupKeepsWhatItRead(t *testing.T) {
+	group := types.NewJID("120363001234567890", types.GroupServer)
+	community := types.NewJID("120363000000000001", types.GroupServer)
+	reads := map[string]int{}
+	members := 25
+	read := func(_ context.Context, jid types.JID) (*types.GroupInfo, error) {
+		reads[jid.String()]++
+		if jid == community {
+			return &types.GroupInfo{JID: community, GroupName: types.GroupName{Name: "Obra"}}, nil
+		}
+		return &types.GroupInfo{
+			JID:               group,
+			GroupName:         types.GroupName{Name: "Ventas"},
+			ParticipantCount:  members,
+			GroupLinkedParent: types.GroupLinkedParent{LinkedParentJID: community},
+		}, nil
+	}
+	session := &Session{Address: "5491100000009"}
+
+	facts, ok := readGroup(session, group, read)
+	if !ok || facts.members != 25 || facts.admin || facts.parent != community.String() {
+		t.Fatalf("first read: %+v %v", facts, ok)
+	}
+	if session.groupName(group.String()) != "Ventas" || session.groupName(community.String()) != "Obra" {
+		t.Errorf("names: %q %q", session.groupName(group.String()), session.groupName(community.String()))
+	}
+	readGroup(session, group, read)
+	if reads[group.String()] != 1 || reads[community.String()] != 1 {
+		t.Errorf("a kept group is not read again: %v", reads)
+	}
+
+	var message WebhookMessage
+	stampGroup(session, &message, facts)
+	if message.ConversationMembers != 25 || message.ConversationAdmin || message.ConversationCommunity != "Obra" {
+		t.Errorf("stamped: %+v", message)
+	}
+
+	members = 26
+	session.forgetGroup(group.String())
+	if facts, _ := readGroup(session, group, read); facts.members != 26 || reads[group.String()] != 2 {
+		t.Errorf("a forgotten group is read afresh: %+v %v", facts, reads)
+	}
+	if reads[community.String()] != 1 {
+		t.Errorf("a community already named is not read again: %v", reads)
+	}
+
+	failing := func(context.Context, types.JID) (*types.GroupInfo, error) {
+		return nil, errors.New("timed out")
+	}
+	other := types.NewJID("120363001234567899", types.GroupServer)
+	if _, ok := readGroup(session, other, failing); ok {
+		t.Error("an unreadable group has no facts")
+	}
+	if _, ok := session.cachedGroup(other.String()); ok {
+		t.Error("an unreadable group keeps nothing")
+	}
+}
+
+// The history import reads every group at once, and names each community the
+// list leaves unnamed with a read of its own.
+func TestReadAllGroups(t *testing.T) {
+	ventas := types.NewJID("120363001234567890", types.GroupServer)
+	asado := types.NewJID("120363001234567891", types.GroupServer)
+	community := types.NewJID("120363000000000001", types.GroupServer)
+	list := func(context.Context) ([]*types.GroupInfo, error) {
+		return []*types.GroupInfo{
+			{
+				JID: ventas, GroupName: types.GroupName{Name: "Ventas"},
+				GroupLinkedParent: types.GroupLinkedParent{LinkedParentJID: community},
+				Participants: []types.GroupParticipant{
+					{JID: types.NewJID("5491100000009", types.DefaultUserServer), IsAdmin: true},
+					{JID: types.NewJID("5491100000001", types.DefaultUserServer)},
+				},
+			},
+			{JID: asado, GroupName: types.GroupName{Name: "Asado"}, ParticipantCount: 40},
+		}, nil
+	}
+	var read []types.JID
+	reader := func(_ context.Context, jid types.JID) (*types.GroupInfo, error) {
+		read = append(read, jid)
+		return &types.GroupInfo{JID: jid, GroupName: types.GroupName{Name: "Obra"}}, nil
+	}
+	session := &Session{Address: "5491100000009"}
+	if err := readAllGroups(session, list, reader); err != nil {
+		t.Fatal(err)
+	}
+	if facts, ok := session.cachedGroup(ventas.String()); !ok || facts.members != 2 || !facts.admin ||
+		session.groupName(facts.parent) != "Obra" {
+		t.Errorf("ventas: %+v %v", facts, ok)
+	}
+	if facts, ok := session.cachedGroup(asado.String()); !ok || facts.members != 40 || facts.parent != "" {
+		t.Errorf("asado: %+v %v", facts, ok)
+	}
+	if len(read) != 1 || read[0] != community {
+		t.Errorf("only the unnamed community is read on its own: %v", read)
 	}
 }

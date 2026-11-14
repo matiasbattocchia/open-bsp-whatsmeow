@@ -36,7 +36,15 @@ type Config struct {
 	// `connected` and `logged_out` are posted, which is all OpenBSP's
 	// management function accepts.
 	LinkEvents bool
+	// How many days of history a pairing asks the phone for (HISTORY_DAYS).
+	// The request rides the pairing, so a number already paired keeps what
+	// it got.
+	HistoryDays uint32
 }
+
+// DEFAULT_HISTORY_DAYS is the history a pairing asks for when HISTORY_DAYS
+// says nothing.
+const DEFAULT_HISTORY_DAYS = 60
 
 func ConfigFromEnv() (*Config, error) {
 	cfg := &Config{
@@ -59,6 +67,11 @@ func ConfigFromEnv() (*Config, error) {
 		}
 		cfg.LinkEvents = on
 	}
+	days, err := historyDays(os.Getenv("HISTORY_DAYS"))
+	if err != nil {
+		return nil, err
+	}
+	cfg.HistoryDays = days
 	if cfg.ListenAddr == "" {
 		// PaaS convention (Zeabur/Heroku/...): the platform announces the
 		// port it routes traffic to via PORT.
@@ -72,4 +85,17 @@ func ConfigFromEnv() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// historyDays reads HISTORY_DAYS: a whole number of days, at least one, and
+// DEFAULT_HISTORY_DAYS when unset.
+func historyDays(raw string) (uint32, error) {
+	if raw == "" {
+		return DEFAULT_HISTORY_DAYS, nil
+	}
+	days, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil || days == 0 {
+		return 0, fmt.Errorf("HISTORY_DAYS must be a whole number of days, 1 or more (got %q)", raw)
+	}
+	return uint32(days), nil
 }
