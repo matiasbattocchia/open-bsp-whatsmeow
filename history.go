@@ -60,11 +60,22 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 		pending = WebhookBatch{OrganizationAddress: session.Address, History: true}
 	}
 
+	// The groups' facts ride every imported message as they ride live ones,
+	// read whole once a process: a history sync names hundreds of groups.
+	for _, conversation := range evt.Data.GetConversations() {
+		if chat, err := types.ParseJID(conversation.GetID()); err == nil && chat.Server == types.GroupServer {
+			m.readGroups(session)
+			break
+		}
+	}
+
 	imported, skipped := 0, 0
 	for _, conversation := range evt.Data.GetConversations() {
 		chat, err := types.ParseJID(conversation.GetID())
-		if err != nil || chat == types.StatusBroadcastJID ||
-			chat.Server == types.NewsletterServer {
+		if err != nil || chat == types.StatusBroadcastJID {
+			continue
+		}
+		if isChannel(chat) && !runsChannel(session, chat) {
 			continue
 		}
 
@@ -74,6 +85,10 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			if err != nil {
 				skipped++
 				continue
+			}
+			if isChannel(chat) {
+				// a channel the account runs speaks with its voice
+				parsed.Info.IsFromMe = true
 			}
 
 			// Protocol messages, reactions and votes reference other rows;
@@ -122,10 +137,21 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 			} else {
 				message.SenderName, message.SenderSaved = contactName(session, message.SenderAddress, parsed.Info.PushName)
 			}
-			if !parsed.Info.IsGroup {
+			switch {
+			case chatByJID(parsed.Info.MessageSource):
+				message.ConversationName = conversation.GetName()
+				if chat.Server == types.GroupServer {
+					if facts, ok := session.cachedGroup(chat.String()); ok {
+						stampGroup(session, &message, facts)
+					}
+					if message.ConversationName == "" {
+						message.ConversationName = session.groupName(chat.String())
+					}
+				} else if message.ConversationName == "" && isChannel(chat) {
+					message.ConversationName = session.channelName(chat.String())
+				}
+			default:
 				message.ConversationName, _ = contactName(session, message.ConversationAddress, "")
-			} else if name := conversation.GetName(); name != "" {
-				message.ConversationName = name
 			}
 
 			if poll := m.rememberPoll(message.ExternalID, content); poll != nil {
@@ -147,6 +173,11 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 		}
 		if view, ok := historyView(address, conversation, time.Now()); ok {
 			if chat.Server == types.GroupServer {
+				view.Name = conversation.GetName()
+				if facts, ok := session.cachedGroup(chat.String()); ok {
+					stampRoom(session, &view, facts)
+				}
+			} else if chatByJID(types.MessageSource{Chat: chat}) {
 				view.Name = conversation.GetName()
 			} else if session.Client != nil && session.Client.Store != nil {
 				view.Name, _ = contactName(session, address, "")

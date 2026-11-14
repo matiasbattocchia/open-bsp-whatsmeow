@@ -106,12 +106,21 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 		m.handleReceipt(session, v)
 
 	case *events.GroupInfo:
+		// whatever moved, the group's facts are read afresh by its next line
+		session.forgetGroup(v.JID.ToNonAD().String())
 		if change, ok := groupChange(session, v); ok {
 			m.postRoom(session, change)
 		}
 
 	case *events.JoinedGroup:
+		session.forgetGroup(v.JID.ToNonAD().String())
 		m.postRoom(session, joinedGroup(session, v))
+
+	case *events.NewsletterJoin:
+		session.noteChannel(v.ID.ToNonAD().String(), &v.NewsletterMetadata)
+
+	case *events.NewsletterLeave:
+		session.forgetChannel(v.ID.ToNonAD().String())
 
 	case *events.Picture:
 		if change, ok := pictureChange(session, v); ok {
@@ -191,13 +200,27 @@ func addressJID(address string) types.JID {
 	return types.NewJID(address, types.DefaultUserServer)
 }
 
-// conversationAddressFor is the chat's address: the group JID for groups,
-// the peer's canonical bare number for direct chats — the value of
-// messages.conversation_address. senderAddressFor is the message author —
-// the group participant, the DM peer, or the session's own number when the
-// account itself spoke (IsFromMe): we know our address, so we stamp it.
+// chatByJID is whether a chat is addressed by its own JID rather than by a
+// person: a group, a broadcast list and a channel. A list's message names its
+// author as a participant, as a group's does; the live wire flags a list as a
+// group, and the history import does not.
+func chatByJID(source types.MessageSource) bool {
+	switch source.Chat.Server {
+	case types.GroupServer, types.BroadcastServer, types.NewsletterServer:
+		return true
+	}
+	return source.IsGroup
+}
+
+// conversationAddressFor is the chat's address: the JID for a group, a
+// broadcast list and a channel, the peer's canonical bare number for direct
+// chats — the value of messages.conversation_address. senderAddressFor is the
+// message author — the participant, the DM peer, or the session's own number
+// when the account itself spoke (IsFromMe): we know our address, so we stamp
+// it. A list's message from somebody else keeps the list's address; that it
+// shows in the direct chat with its author is the consumer's to place.
 func conversationAddressFor(session *Session, source types.MessageSource) string {
-	if source.IsGroup {
+	if chatByJID(source) {
 		return source.Chat.String()
 	}
 	if source.IsFromMe {
@@ -213,7 +236,7 @@ func conversationAddressFor(session *Session, source types.MessageSource) string
 // reaction and a receipt all came back naming a chat that did not exist here (live,
 // 2026-08-18 — the quoted approval that answered nothing).
 func chatSegment(session *Session, source types.MessageSource) string {
-	if source.IsGroup {
+	if chatByJID(source) {
 		return source.Chat.User
 	}
 	if source.IsFromMe {
@@ -226,7 +249,7 @@ func senderAddressFor(session *Session, source types.MessageSource) string {
 	if source.IsFromMe {
 		return session.Address
 	}
-	if source.IsGroup {
+	if source.IsGroup || source.Chat.Server == types.BroadcastServer {
 		return canonicalUser(session, source.Sender, source.SenderAlt)
 	}
 	return canonicalUser(session, source.Chat, source.SenderAlt)
@@ -452,7 +475,8 @@ func authorSegment(session *Session, info types.MessageInfo) string {
 // the author's is the other one's — ours when the peer carries the key, the peer's
 // when we do, named the way chatSegment names the peer.
 func keySender(session *Session, source types.MessageSource, author string, fromMe bool, participant string) string {
-	if fromMe {
+	// every post in a channel the account runs is the account's
+	if fromMe || isChannel(source.Chat) {
 		return author
 	}
 	if participant != "" {
@@ -783,7 +807,7 @@ func (m *Manager) editFor(
 		return nil
 	}
 	muted, archived := chatMarks(session, evt.Info.Chat, evt.Info.Timestamp)
-	return &WebhookEdit{
+	edit := &WebhookEdit{
 		ExternalID:          ownID,
 		OriginalMessageID:   original,
 		ConversationAddress: conversation,
@@ -794,6 +818,12 @@ func (m *Manager) editFor(
 		Muted:               muted,
 		Archived:            archived,
 	}
+	if evt.Info.Chat.Server == types.GroupServer {
+		if facts, ok := groupOf(session, evt.Info.Chat); ok {
+			stampEdit(session, edit, facts)
+		}
+	}
+	return edit
 }
 
 // handleSecretEncrypted translates the message-secret envelope — the shape WhatsApp
@@ -928,12 +958,17 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		return // still pairing
 	}
 
-	// WhatsApp Status (stories) and newsletters are not conversations —
-	// drop them. status@broadcast notably is NOT a group: GetGroupInfo on
-	// it times out and would stall the event loop.
-	if evt.Info.Chat == types.StatusBroadcastJID ||
-		evt.Info.Chat.Server == types.NewsletterServer {
+	// WhatsApp Status (stories) is no conversation — drop it. status@broadcast
+	// notably is NOT a group: GetGroupInfo on it times out and would stall the
+	// event loop. A channel's post is the account's when it runs the channel,
+	// and dropped when it only follows it (channels.go).
+	if evt.Info.Chat == types.StatusBroadcastJID {
 		return
+	}
+	if isChannel(evt.Info.Chat) {
+		if evt = m.channelPost(session, evt); evt == nil {
+			return
+		}
 	}
 
 	if pm := evt.Message.GetProtocolMessage(); pm != nil {
@@ -993,7 +1028,13 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		}
 	}
 
-	muted, archived := chatMarks(session, chat, evt.Info.Timestamp)
+	// a list's message from somebody else shows in the direct chat with them,
+	// under that chat's marks
+	marked := chat
+	if evt.Info.IsIncomingBroadcast() && !evt.Info.Sender.IsEmpty() {
+		marked = evt.Info.Sender.ToNonAD()
+	}
+	muted, archived := chatMarks(session, marked, evt.Info.Timestamp)
 	message := WebhookMessage{
 		ExternalID: externalID(
 			session.Address, chatSegment(session, evt.Info.MessageSource),
@@ -1020,9 +1061,20 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 		live = evt.Info.PushName
 		message.SenderName, message.SenderSaved = contactName(session, message.SenderAddress, live)
 	}
-	if evt.Info.IsGroup {
+	switch {
+	case chat.Server == types.GroupServer:
+		// Every message of a group says how many are in it, whether the account
+		// is an admin there, and the community it sits in; the first one this
+		// process sees of the group waits for the read that tells.
+		if facts, ok := groupOf(session, chat); ok {
+			stampGroup(session, &message, facts)
+		}
 		message.ConversationName = session.groupName(chat.String())
-	} else {
+	case isChannel(chat):
+		message.ConversationName = session.channelName(chat.String())
+	case evt.Info.IsGroup:
+		message.ConversationName = session.groupName(chat.String())
+	default:
 		// A direct chat IS its peer, so the peer's name names the room — the
 		// only name a DM will ever have (WhatsApp has no subject for one).
 		message.ConversationName, _ = contactName(session, message.ConversationAddress, live)
@@ -1040,27 +1092,15 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 
 	batch := WebhookBatch{OrganizationAddress: session.Address}
 
-	if evt.Info.IsGroup {
-		// First message from this group this process lifetime: send the
-		// subject so the webhook can name the conversation. Off the event
-		// loop — GetGroupInfo is a server round-trip.
-		if session.markGroupSent(chat.String()) {
-			go func() {
-				info, err := session.Client.GetGroupInfo(context.Background(), chat)
-				if err != nil {
-					m.log.Warnf("GetGroupInfo %s failed: %v", chat, err)
-					return
-				}
-				session.noteGroupName(chat.String(), info.Name)
-				if err := m.outbox.Deliver(session, WebhookBatch{
-					OrganizationAddress: session.Address,
-					Rooms: []WebhookRoom{
-						{Address: chat.String(), Name: info.Name},
-					},
-				}); err != nil {
-					m.log.Errorf("Post group subject for %s failed: %v", chat, err)
-				}
-			}()
+	// First message from this group this process lifetime: send the subject on
+	// the rooms feed too, for a consumer that names conversations from it.
+	if name := message.ConversationName; chat.Server == types.GroupServer && name != "" &&
+		session.markGroupSent(chat.String()) {
+		if err := m.outbox.Deliver(session, WebhookBatch{
+			OrganizationAddress: session.Address,
+			Rooms:               []WebhookRoom{{Address: chat.String(), Name: name}},
+		}); err != nil {
+			m.log.Errorf("Post group subject for %s failed: %v", chat, err)
 		}
 	}
 
@@ -1101,8 +1141,8 @@ func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
 		return
 	}
 
-	if evt.Chat == types.StatusBroadcastJID ||
-		evt.Chat.Server == types.NewsletterServer {
+	// a channel's followers are anonymous: a receipt there names nobody
+	if evt.Chat == types.StatusBroadcastJID || isChannel(evt.Chat) {
 		return
 	}
 

@@ -66,6 +66,51 @@ type Session struct {
 	// What a room's line needs from events before it: calls ringing, label
 	// names, the favorites list (rooms.go).
 	rooms roomMemory
+
+	// A group's facts (groupFacts), kept from its last read until WhatsApp
+	// announces a change to it. groupsRead is the account's groups read whole
+	// once, for the history import.
+	factsMu    sync.Mutex
+	facts      map[string]groupFacts
+	groupsRead sync.Once
+
+	// The channels the account has been seen in, and whether it runs each
+	// (channels.go), kept from WhatsApp's answer until it says the account left.
+	channelsMu sync.Mutex
+	channels   map[string]channel
+}
+
+// noteGroup keeps what a read of a group says: its subject, the namespace it
+// addresses people in, and its facts, which it answers. own names the account
+// (ownUsers).
+func (s *Session) noteGroup(info *types.GroupInfo, own ...string) groupFacts {
+	address := info.JID.ToNonAD().String()
+	s.noteGroupName(address, info.Name)
+	s.noteAddressingMode(address, info.AddressingMode)
+	facts := factsOf(info, own...)
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	if s.facts == nil {
+		s.facts = make(map[string]groupFacts)
+	}
+	s.facts[address] = facts
+	return facts
+}
+
+// cachedGroup answers a group's facts as last read; ok is false when they were
+// never read, or forgotten since.
+func (s *Session) cachedGroup(address string) (groupFacts, bool) {
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	facts, ok := s.facts[address]
+	return facts, ok
+}
+
+// forgetGroup drops a group's facts, so its next line reads them afresh.
+func (s *Session) forgetGroup(address string) {
+	s.factsMu.Lock()
+	defer s.factsMu.Unlock()
+	delete(s.facts, address)
 }
 
 // noteAddressingMode records what namespace a chat addresses people in.
