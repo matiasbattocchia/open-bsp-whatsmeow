@@ -165,7 +165,11 @@ Working end to end:
   (`MarkRead`, `SendChatPresence`)
 - Typing in: each chat state the session hears is a `typing` entry of the
   batch (`conversation_address`, `sender_address`, `state` composing or
-  paused, `media` audio while recording, `timestamp`), and a log line
+  paused, `media` audio while recording, `timestamp`), and a log line.
+  WhatsApp tells only an online session who is typing: a message dispatch
+  carrying `engaged_until` (RFC 3339) shows the session online until the
+  latest such moment, then offline again. While online, the account's phone
+  stops notifying new messages
 - Contact pushnames
 - QR + phone-code pairing with rotation polling, logout, session-death
   (`logged_out`) notification to management; link state (`disconnected` /

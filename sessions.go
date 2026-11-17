@@ -78,6 +78,9 @@ type Session struct {
 	// (channels.go), kept from WhatsApp's answer until it says the account left.
 	channelsMu sync.Mutex
 	channels   map[string]channel
+
+	// Online while a conversation the account spoke in is engaged (presence.go).
+	online onlineHold
 }
 
 // noteGroup keeps what a read of a group says: its subject, the namespace it

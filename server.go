@@ -158,6 +158,10 @@ type dispatchRequest struct {
 		Name   string `json:"name"`
 		Remove bool   `json:"remove"`
 	} `json:"contact"`
+	// For type "message": until when the conversation stays engaged after this
+	// send (RFC 3339). The session shows online until the latest such moment,
+	// the state in which WhatsApp tells it who is typing.
+	EngagedUntil string `json:"engaged_until"`
 }
 
 // Response codes follow the dispatcher's transient/permanent split:
@@ -250,6 +254,9 @@ func (s *Server) handleDispatch(rw http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			http.Error(w, err.Error(), sendErrorStatus(err))
 			return
+		}
+		if until, err := time.Parse(time.RFC3339, req.EngagedUntil); err == nil {
+			s.manager.holdOnline(session, until)
 		}
 
 		writeJSON(w, map[string]any{
