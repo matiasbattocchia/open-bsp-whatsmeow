@@ -29,6 +29,7 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 	case *events.Connected:
 		if session.Address != "" {
 			m.postLinkState(session, "connected")
+			session.online.reassert(time.Now())
 		} else if session.Client.Store.ID != nil {
 			m.completePairing(session, *session.Client.Store.ID)
 		}
