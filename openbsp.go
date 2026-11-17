@@ -96,6 +96,19 @@ type WebhookBatch struct {
 	Rooms    []WebhookRoom    `json:"rooms,omitempty"`
 	Edits    []WebhookEdit    `json:"edits,omitempty"`
 	Revokes  []WebhookRevoke  `json:"revokes,omitempty"`
+	Typing   []WebhookTyping  `json:"typing,omitempty"`
+}
+
+// WebhookTyping is a chat's typing state as WhatsApp reports it: somebody began
+// writing ("composing", with media "audio" while recording a voice note) or
+// stopped ("paused"). It names a chat and a writer, never a message, and the
+// timestamp is when the bridge heard it: the wire carries none.
+type WebhookTyping struct {
+	ConversationAddress string `json:"conversation_address"`
+	SenderAddress       string `json:"sender_address"`
+	State               string `json:"state"`
+	Media               string `json:"media,omitempty"`
+	Timestamp           string `json:"timestamp"`
 }
 
 // WebhookRoom is a chat's line about itself, a group's or a direct chat's: the

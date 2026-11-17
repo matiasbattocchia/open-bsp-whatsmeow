@@ -163,6 +163,9 @@ Working end to end:
 - Replies (`re_message_id` ↔ quoted message) in/out; edits and revokes in
 - Delivery/read receipts in; read receipts + typing indicators out
   (`MarkRead`, `SendChatPresence`)
+- Typing in: each chat state the session hears is a `typing` entry of the
+  batch (`conversation_address`, `sender_address`, `state` composing or
+  paused, `media` audio while recording, `timestamp`), and a log line
 - Contact pushnames
 - QR + phone-code pairing with rotation polling, logout, session-death
   (`logged_out`) notification to management; link state (`disconnected` /

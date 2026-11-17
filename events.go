@@ -105,6 +105,9 @@ func (m *Manager) handleEvent(session *Session, evt any) {
 	case *events.Receipt:
 		m.handleReceipt(session, v)
 
+	case *events.ChatPresence:
+		m.handleChatPresence(session, v)
+
 	case *events.GroupInfo:
 		// whatever moved, the group's facts are read afresh by its next line
 		session.forgetGroup(v.JID.ToNonAD().String())
@@ -1134,6 +1137,54 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 	if err := m.outbox.Deliver(session, batch); err != nil {
 		m.log.Errorf("Post message %s failed: %v", message.ExternalID, err)
 	}
+}
+
+// handleChatPresence forwards a typing state. Each one is logged: WhatsApp sends
+// chat states only to clients it deems present, and the log is what says which
+// reach a session that never declared itself available.
+func (m *Manager) handleChatPresence(session *Session, evt *events.ChatPresence) {
+	if session.Address == "" {
+		return
+	}
+	m.log.Infof("Typing %s%s in %s from %s", evt.State, mediaNote(evt.Media), evt.Chat, evt.Sender)
+	typing, ok := typingOf(session, evt, time.Now())
+	if !ok {
+		return
+	}
+	batch := WebhookBatch{OrganizationAddress: session.Address, Typing: []WebhookTyping{typing}}
+	if err := m.outbox.Deliver(session, batch); err != nil {
+		m.log.Errorf("Post typing for %s failed: %v", evt.Chat, err)
+	}
+}
+
+func mediaNote(media types.ChatPresenceMedia) string {
+	if media == "" {
+		return ""
+	}
+	return " (" + string(media) + ")"
+}
+
+// typingOf is the webhook's line for a chat state, addressed like a message from
+// the same writer; a status broadcast and a channel have no typing to tell.
+func typingOf(session *Session, evt *events.ChatPresence, at time.Time) (WebhookTyping, bool) {
+	if evt.Chat == types.StatusBroadcastJID || isChannel(evt.Chat) {
+		return WebhookTyping{}, false
+	}
+	switch evt.State {
+	case types.ChatPresenceComposing, types.ChatPresencePaused:
+	default:
+		return WebhookTyping{}, false
+	}
+	typing := WebhookTyping{
+		ConversationAddress: conversationAddressFor(session, evt.MessageSource),
+		SenderAddress:       senderAddressFor(session, evt.MessageSource),
+		State:               string(evt.State),
+		Timestamp:           at.UTC().Format(time.RFC3339),
+	}
+	if evt.State == types.ChatPresenceComposing {
+		typing.Media = string(evt.Media)
+	}
+	return typing, true
 }
 
 func (m *Manager) handleReceipt(session *Session, evt *events.Receipt) {
