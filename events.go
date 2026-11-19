@@ -414,10 +414,10 @@ func mentionsIn(session *Session, msg *waE2E.Message, text string) (string, []Me
 	return text, nil
 }
 
-// quotedRef pulls the reply target (quoted message id + its sender JID) out
-// of whichever message type carries the ContextInfo.
-func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
-	for _, ctx := range []*waE2E.ContextInfo{
+// contextInfos is every ContextInfo a message can carry, one per message type;
+// the type the message is carries the one that is set.
+func contextInfos(msg *waE2E.Message) []*waE2E.ContextInfo {
+	return []*waE2E.ContextInfo{
 		msg.GetExtendedTextMessage().GetContextInfo(),
 		msg.GetImageMessage().GetContextInfo(),
 		msg.GetAudioMessage().GetContextInfo(),
@@ -432,12 +432,29 @@ func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
 		msg.GetListResponseMessage().GetContextInfo(),
 		msg.GetInteractiveResponseMessage().GetContextInfo(),
 		msg.GetTemplateButtonReplyMessage().GetContextInfo(),
-	} {
+	}
+}
+
+// quotedRef pulls the reply target (quoted message id + its sender JID) out
+// of whichever message type carries the ContextInfo.
+func quotedRef(msg *waE2E.Message) (stanzaID, participant string) {
+	for _, ctx := range contextInfos(msg) {
 		if ctx.GetStanzaID() != "" {
 			return ctx.GetStanzaID(), ctx.GetParticipant()
 		}
 	}
 	return "", ""
+}
+
+// isForwarded says whether the sender forwarded the message from elsewhere,
+// as WhatsApp marks it under the message's words.
+func isForwarded(msg *waE2E.Message) bool {
+	for _, ctx := range contextInfos(msg) {
+		if ctx.GetIsForwarded() {
+			return true
+		}
+	}
+	return false
 }
 
 // pollCreation is the poll msg carries, whichever generation of the message
@@ -1031,6 +1048,7 @@ func (m *Manager) handleMessage(session *Session, evt *events.Message) {
 			)
 		}
 	}
+	content.Forwarded = isForwarded(evt.Message)
 
 	// a list's message from somebody else shows in the direct chat with them,
 	// under that chat's marks
