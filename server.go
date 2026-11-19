@@ -145,8 +145,8 @@ type dispatchRequest struct {
 		Status              map[string]any `json:"status"`
 	} `json:"record"`
 	// Where the bytes are fetched from for a file part: a signed download URL
-	// for content.file.uri. May be RELATIVE ("/m/<signed>"), in which case it
-	// resolves against the session's receiver — the consumer's own address,
+	// for content.file.uri. May be RELATIVE ("ingest/media/<signed>"), in which
+	// case it resolves against the session's receiver — the consumer's own address,
 	// the one this bridge already delivers to, so it never has to state its
 	// host to us twice.
 	MediaURL string `json:"media_url"`
@@ -373,10 +373,15 @@ func referencedKey(session *Session, content MessageContent) (id string, sender 
 	return id, addressJID(senderSegment), true
 }
 
-// replyContext turns re_message_id into a quote (ContextInfo), matching the
-// Cloud API dispatcher: no context on forwards.
-func replyContext(session *Session, content MessageContent) *waE2E.ContextInfo {
-	if content.ReMessageID == "" || content.Forwarded {
+// messageContext is the ContextInfo an outgoing message wears: a forward is
+// marked forwarded and quotes nothing, and re_message_id becomes a quote.
+// WhatsApp counts forwarding hops in ForwardingScore; a forward we send is
+// one hop from the message it copies.
+func messageContext(session *Session, content MessageContent) *waE2E.ContextInfo {
+	if content.Forwarded {
+		return &waE2E.ContextInfo{IsForwarded: proto.Bool(true), ForwardingScore: proto.Uint32(1)}
+	}
+	if content.ReMessageID == "" {
 		return nil
 	}
 	id, sender, ok := referencedKey(session, content)
@@ -493,7 +498,7 @@ func buildOutgoingMessage(
 
 		text := markdownToWhatsApp(content.Text)
 		text, mentioned := encodeMentions(session, chat, content, text)
-		ctx := replyContext(session, content)
+		ctx := messageContext(session, content)
 		if ctx != nil || len(mentioned) > 0 {
 			if ctx == nil {
 				ctx = &waE2E.ContextInfo{}
@@ -530,7 +535,7 @@ func buildOutgoingMessage(
 					DegreesLongitude: &location.Longitude,
 					Name:             optString(location.Name),
 					Address:          optString(location.Address),
-					ContextInfo:      replyContext(session, content),
+					ContextInfo:      messageContext(session, content),
 				},
 			}, 0, nil
 
@@ -548,14 +553,14 @@ func buildOutgoingMessage(
 				cards = append(cards, contactToVcard(contact))
 			}
 			if len(cards) == 1 {
-				cards[0].ContextInfo = replyContext(session, content)
+				cards[0].ContextInfo = messageContext(session, content)
 				return &waE2E.Message{ContactMessage: cards[0]}, 0, nil
 			}
 			return &waE2E.Message{
 				ContactsArrayMessage: &waE2E.ContactsArrayMessage{
 					DisplayName: proto.String(fmt.Sprintf("%d contacts", len(cards))),
 					Contacts:    cards,
-					ContextInfo: replyContext(session, content),
+					ContextInfo: messageContext(session, content),
 				},
 			}, 0, nil
 
@@ -749,7 +754,7 @@ func buildMediaMessage(r *http.Request, session *Session, chat types.JID, req di
 		session, chat, req.Record.Content, markdownToWhatsApp(caption),
 	)
 	captionPtr := optString(captionText)
-	contextInfo := replyContext(session, req.Record.Content)
+	contextInfo := messageContext(session, req.Record.Content)
 	if len(captionMentioned) > 0 {
 		if contextInfo == nil {
 			contextInfo = &waE2E.ContextInfo{}

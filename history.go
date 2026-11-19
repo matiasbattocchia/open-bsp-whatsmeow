@@ -117,6 +117,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 					)
 				}
 			}
+			content.Forwarded = isForwarded(parsed.Message)
 
 			message := WebhookMessage{
 				ExternalID: externalID(

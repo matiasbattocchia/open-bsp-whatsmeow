@@ -224,7 +224,8 @@ func (m *Manager) rememberInteractive(externalID string, content *MessageContent
 // interactive message the bridge kept, or to one with nothing to press. Naming
 // none of the options of one that has some is a refusal that lists them.
 func pressFor(store *Store, session *Session, content MessageContent) (*waE2E.Message, int, error) {
-	if content.ReMessageID == "" {
+	// a forward is a copy of another message, and answers nothing
+	if content.ReMessageID == "" || content.Forwarded {
 		return nil, 0, nil
 	}
 	data, err := store.GetInteractive(context.Background(), content.ReMessageID)
@@ -254,7 +255,7 @@ func pressFor(store *Store, session *Session, content MessageContent) (*waE2E.Me
 			said, strings.Join(titles, ", "))
 	}
 
-	ctx := replyContext(session, content)
+	ctx := messageContext(session, content)
 	switch data.Form {
 	case "buttons":
 		return &waE2E.Message{ButtonsResponseMessage: &waE2E.ButtonsResponseMessage{
