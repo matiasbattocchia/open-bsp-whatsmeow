@@ -49,7 +49,7 @@ open-bsp-whatsmeow ─►  whatsapp-web-webhook     (inbound messages)   │
 | `LISTEN_ADDR`   | no       | Default `:$PORT` (PaaS convention) or `:8081`            |
 | `LOG_LEVEL`     | no       | Default `INFO`                                           |
 | `LINK_EVENTS`   | no       | `true` also posts a paired session's link state to the management function: `disconnected` when its socket drops, `connected` when whatsmeow has it back. Default `false` — OpenBSP's management function accepts only the pairing `connected` and `logged_out` |
-| `HISTORY_DAYS`  | no       | How many days of history a pairing asks the phone for, as a full sync. Default `60`. The request rides the pairing, so a number already paired keeps what it got |
+| `HISTORY_DAYS`  | no       | How many days of history a pairing that names no range asks the phone for, as a full sync. Default `60`. The request rides the pairing, so a number already paired keeps what it got |
 
 OpenBSP side (`supabase/functions/.env`): set `WHATSAPP_WEB_URL` to this
 service's base URL and `WHATSAPP_WEB_TOKEN` to the same token.
@@ -92,11 +92,19 @@ services:
   the name it carried, so a nameless save says what it settled on. The book
   itself stays WhatsApp's: what the consumer sees of it is `sender_saved` on
   every later message from that person.
-- `POST /sessions` — `{organization_id, phone_number?, agent_id?, webhook_url?}` →
+- `POST /sessions` — `{organization_id, phone_number?, agent_id?, webhook_url?,
+  history_since?, no_history?}` →
   `{session_id, status: "pending", qr_code?}` or `{..., pairing_code?}`.
   `webhook_url` is where THIS session's traffic (webhook batches, media
   uploads, session events, relative `media_url` fetches) goes, kept with its
   mapping; absent ⇒ `OPENBSP_URL`. One bridge can serve many consumers.
+  `history_since` (RFC 3339) asks the phone for the history from then on, the
+  whole days back to it, and no message older is posted: a consumer that
+  already holds the number up to some moment asks for what it is missing.
+  `no_history` asks for none, and nothing of the history sync is posted, its
+  contact names included. Neither ⇒ a full sync of `HISTORY_DAYS`. The phone
+  hears the ask at pairing only; a session a restart brings back posts
+  whatever history still comes.
 - `GET /sessions/pending/{session_id}` — poll during pairing (QR codes
   rotate ~20s): `{session_id, status: pending|paired|error, qr_code?,
   pairing_code?, address?, error?}`.
@@ -214,7 +222,8 @@ Parity notes vs the `whatsapp` (Cloud API) service:
 
 Also working: group subjects → conversation names (on first sight and on
 renames), history sync import (messages + pushnames, chunked; a pairing asks
-for a full sync of `HISTORY_DAYS`), LID → phone canonicalization for contact
+for the range its consumer names, else a full sync of `HISTORY_DAYS`), LID →
+phone canonicalization for contact
 addresses.
 
 What a chat says about itself rather than in it rides the batch's `rooms`

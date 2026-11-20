@@ -955,10 +955,29 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		// tenant names it here; one receiver for the whole bridge is
 		// OPENBSP_URL, the fallback.
 		WebhookURL string `json:"webhook_url"`
+		// Optional: the history the pairing asks the phone for, from this
+		// moment on (RFC 3339): what the consumer holds of the number ends
+		// there. Absent, a full sync of HISTORY_DAYS.
+		HistorySince string `json:"history_since"`
+		// Optional: no history at all.
+		NoHistory bool `json:"no_history"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	history := HistoryAsk{None: req.NoHistory}
+	if req.HistorySince != "" {
+		if req.NoHistory {
+			http.Error(w, "history_since and no_history: one or the other", http.StatusBadRequest)
+			return
+		}
+		since, err := time.Parse(time.RFC3339, req.HistorySince)
+		if err != nil {
+			http.Error(w, "history_since must be an RFC 3339 time", http.StatusBadRequest)
+			return
+		}
+		history.Since = since
 	}
 	if req.OrganizationID == "" {
 		http.Error(w, "organization_id is required", http.StatusBadRequest)
@@ -976,7 +995,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := s.manager.CreateSession(
-		r.Context(), req.OrganizationID, req.PhoneNumber, req.AgentID, req.WebhookURL,
+		r.Context(), req.OrganizationID, req.PhoneNumber, req.AgentID, req.WebhookURL, history,
 	)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

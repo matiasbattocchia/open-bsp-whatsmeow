@@ -81,6 +81,10 @@ type Session struct {
 
 	// Online while a conversation the account spoke in is engaged (presence.go).
 	online onlineHold
+
+	// The history its pairing asked the phone for (historyask.go): what the
+	// history handler posts.
+	history HistoryAsk
 }
 
 // noteGroup keeps what a read of a group says: its subject, the namespace it
@@ -468,8 +472,10 @@ func (p *PendingSession) state() *PairingState {
 // mapping, notifies whatsapp-web-management, and flips the pending status.
 // webhookURL is where the paired session will deliver; empty means the
 // bridge-wide OPENBSP_URL, and the caller has checked that one of the two exists.
+// history is what the pairing asks the phone for, which it hears only now.
 func (m *Manager) CreateSession(
 	ctx context.Context, organizationID, phoneNumber, agentID, webhookURL string,
+	history HistoryAsk,
 ) (*PairingState, error) {
 	device := m.store.Container.NewDevice()
 	session := &Session{
@@ -478,7 +484,9 @@ func (m *Manager) CreateSession(
 		AgentID:        agentID,
 		WebhookURL:     webhookURL,
 		receiver:       m.openbsp.at(webhookURL),
+		history:        history,
 	}
+	session.Client.GetClientPayload = pairingPayload(device, history)
 
 	pending := &PendingSession{
 		ID:        randomID(),
