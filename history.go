@@ -18,13 +18,20 @@ const historyBatchSize = 200
 // backfill must not trigger agent replies, media preprocessing, or webhook
 // fan-out for months-old messages. Media bytes are not imported (old media
 // is frequently gone from the CDN) — FileParts keep their metadata but no
-// URI, which the UI renders as an unavailable attachment.
+// URI, which the UI renders as an unavailable attachment. What is posted is
+// what the pairing asked for (session.history): nothing when it asked for
+// none, and no message older than the start it named.
 func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 	if session.Address == "" {
 		return
 	}
 
 	syncType := evt.Data.GetSyncType().String()
+	if session.history.None {
+		m.log.Infof("History sync (%s) for %s: none asked, %d conversations left",
+			syncType, session.Address, len(evt.Data.GetConversations()))
+		return
+	}
 	m.log.Infof("History sync (%s) for %s: %d conversations, %d pushnames",
 		syncType, session.Address,
 		len(evt.Data.GetConversations()), len(evt.Data.GetPushnames()))
@@ -82,7 +89,7 @@ func (m *Manager) handleHistorySync(session *Session, evt *events.HistorySync) {
 		for _, historyMsg := range conversation.GetMessages() {
 			webMsg := historyMsg.GetMessage()
 			parsed, err := session.Client.ParseWebMessage(chat, webMsg)
-			if err != nil {
+			if err != nil || !session.history.posts(parsed.Info.Timestamp) {
 				skipped++
 				continue
 			}
